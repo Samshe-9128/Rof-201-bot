@@ -1,158 +1,213 @@
 # cogs/undercover.py
+import random
 import discord
 from discord import app_commands
 from discord.ext import commands
-import random
-import os
-from dotenv import load_dotenv
 
-load_dotenv()
-GUILD_ID = int(os.getenv("GUILD_ID"))
+from core.config import ROFColors
+from core.database import db
+from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
+from core.ui import rof_embed
 
 WORDS = [
-    ("Apple", "Pear"), ("Cat", "Dog"), ("Car", "Truck"), ("Coffee", "Tea"),
-    ("Sun", "Moon"), ("Pizza", "Burger"), ("Guitar", "Violin"), ("Beach", "Desert")
+    ("Apple", "Pear"),
+    ("Cat", "Dog"),
+    ("Car", "Truck"),
+    ("Coffee", "Tea"),
+    ("Sun", "Moon"),
+    ("Pizza", "Burger"),
+    ("Guitar", "Violin"),
+    ("Beach", "Desert"),
 ]
 
-class UndercoverLobby(discord.ui.View):
-    def __init__(self, cog, host):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.host = host
-        self.players = [host]
-
-    def get_embed(self):
-        desc = f"**Host:** {self.host.mention}\n\n**Players ({len(self.players)}/6):**\n"
-        desc += "\n".join([f"• {p.mention}" for p in self.players])
-        desc += "\n\n*Click Join to play! Need at least 3 players.*"
-        return discord.Embed(title="🕵️ Undercover Lobby", description=desc, color=discord.Color.blue())
-
-    @discord.ui.button(label="Join", style=discord.ButtonStyle.primary, emoji="✋")
-    async def join_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id in [p.id for p in self.players]:
-            return await interaction.response.send_message("Already in lobby!", ephemeral=True)
-        if len(self.players) >= 6:
-            return await interaction.response.send_message("Lobby is full!", ephemeral=True)
-        
-        self.players.append(interaction.user)
-        await interaction.response.edit_message(embed=self.get_embed())
-
-    @discord.ui.button(label="Start", style=discord.ButtonStyle.success, emoji="▶️")
-    async def start_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.host.id:
-            return await interaction.response.send_message("Only the host can start!", ephemeral=True)
-        if len(self.players) < 3:
-            return await interaction.response.send_message("Need at least 3 players!", ephemeral=True)
-        
-        self.stop()
-        await interaction.response.edit_message(embed=self.get_embed(), view=None)
-        await self.cog.start_game(interaction.channel, self.players)
 
 class UndercoverVote(discord.ui.View):
-    def __init__(self, cog, players, spy):
+    def __init__(self, cog, players, spy, word_pair):
         super().__init__(timeout=180)
         self.cog = cog
         self.players = players
         self.spy = spy
+        self.word_pair = word_pair
         self.votes = {}
 
         options = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in players]
-        self.select = discord.ui.Select(placeholder="Who is the spy?", options=options)
+        self.select = discord.ui.Select(placeholder="Who is the Spy?", options=options)
         self.select.callback = self.vote_callback
         self.add_item(self.select)
 
     async def vote_callback(self, interaction: discord.Interaction):
         if interaction.user.id not in [p.id for p in self.players]:
-            return await interaction.response.send_message("You are not playing!", ephemeral=True)
-            
+            return await interaction.response.send_message("You are not playing in this match!", ephemeral=True)
+
         self.votes[interaction.user.id] = int(self.select.values[0])
         await interaction.response.send_message("✅ Vote locked in!", ephemeral=True)
 
         if len(self.votes) == len(self.players):
             self.stop()
-            await self.cog.tally_votes(interaction.channel, self.players, self.votes, self.spy)
+            await self.cog.tally_votes(interaction.channel, self.players, self.votes, self.spy, self.word_pair)
+
+
+class StartVoteView(discord.ui.View):
+    def __init__(self, cog, players, spy, word_pair):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.players = players
+        self.spy = spy
+        self.word_pair = word_pair
+
+    @discord.ui.button(label="Start Voting", style=discord.ButtonStyle.danger, emoji="🗳️")
+    async def vote_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in [p.id for p in self.players]:
+            return await interaction.response.send_message("You are not playing!", ephemeral=True)
+
+        self.stop()
+        embed = rof_embed(
+            title="🗳️ ROF Undercover — Voting Started",
+            description="Select who you suspect is the Spy from the dropdown menu below!",
+            color=ROFColors.ACCENT,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        vote_view = UndercoverVote(self.cog, self.players, self.spy, self.word_pair)
+        await interaction.channel.send("Cast your votes below:", view=vote_view)
+
 
 class Undercover(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def open_undercover_room(self, interaction: discord.Interaction):
+        existing = room_manager.get_player_active_room(interaction.user.id, "undercover")
+        if existing:
+            return await interaction.response.send_message(
+                f"⚠️ You are already in an active Undercover room (`{existing.room_id}`).",
+                ephemeral=True,
+            )
+
+        room = room_manager.create_room(
+            game_key="undercover",
+            game_title="Undercover (Who's the Spy)",
+            host=interaction.user,
+            min_players=3,
+            max_players=6,
+        )
+
+        async def _on_start(start_inter: discord.Interaction, active_room: MultiplayerRoom):
+            await start_inter.response.edit_message(embed=lobby.build_embed(), view=None)
+            room_manager.close_room(active_room.room_id)
+            await self.start_game(start_inter.channel, active_room.players)
+
+        lobby = RoomLobbyView(
+            room=room,
+            on_start_callback=_on_start,
+            extra_description="🕵️ **Players:** 3–6 players\n💬 Everyone gets a secret word via DM, except the Spy who gets a slightly different word!",
+        )
+        await interaction.response.send_message(embed=lobby.build_embed(), view=lobby)
+        try:
+            room.message = await interaction.original_response()
+        except Exception:
+            pass
+
     @app_commands.command(name="undercover", description="Start a game of Who's the Spy (3-6 players)")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def undercover(self, interaction: discord.Interaction):
-        view = UndercoverLobby(self, interaction.user)
-        await interaction.response.send_message(embed=view.get_embed(), view=view)
+        await self.open_undercover_room(interaction)
 
     async def start_game(self, channel, players):
         pair = random.choice(WORDS)
         civilian_word, spy_word = pair
         spy = random.choice(players)
 
-        # DM everyone
         failed_dms = []
         for p in players:
             try:
                 word = spy_word if p.id == spy.id else civilian_word
                 role = "SPY 🤫" if p.id == spy.id else "CIVILIAN 👤"
-                await p.send(f"🕵️ **Undercover Started!**\nYour word is: **{word}**\nYour role: {role}\n\n*Describe your word in the channel without saying the word itself!*")
-            except:
+                await p.send(
+                    f"🕵️ **ROF Undercover Started!**\n"
+                    f"Your secret word is: **{word}**\n"
+                    f"Your role: **{role}**\n\n"
+                    f"*Describe your word in the server channel without saying the word itself!*"
+                )
+            except Exception:
                 failed_dms.append(p.mention)
 
         if failed_dms:
-            return await channel.send(f"⚠️ Could not DM {', '.join(failed_dms)}. Please enable DMs from server members and try again.")
+            return await channel.send(
+                f"⚠️ Could not DM {', '.join(failed_dms)}. Please enable DMs from server members and try again."
+            )
 
-        embed = discord.Embed(
-            title="🕵️ Undercover Started",
-            description="Everyone has been DMed a secret word.\nOne of you is the Spy and got a slightly different word!\n\n**Take turns describing your word in the chat.**\nWhen ready, click the button below to vote.",
-            color=discord.Color.orange()
+        embed = rof_embed(
+            title="🕵️ ROF UNDERCOVER STARTED",
+            description=(
+                "Everyone has been DMed a secret word.\n"
+                "One of you is the **Spy** and received a slightly different word!\n\n"
+                "**Take turns describing your word in the chat.**\n"
+                "When ready, click the button below to vote."
+            ),
+            color=ROFColors.WARNING,
         )
-        view = StartVoteView(self, players, spy)
+        view = StartVoteView(self, players, spy, pair)
         await channel.send(embed=embed, view=view)
 
-    async def tally_votes(self, channel, players, votes, spy):
+    async def tally_votes(self, channel, players, votes, spy, word_pair):
         counts = {}
         for target_id in votes.values():
             counts[target_id] = counts.get(target_id, 0) + 1
 
         max_votes = max(counts.values())
         eliminated = [pid for pid, c in counts.items() if c == max_votes]
-
-        # Handle tie
         eliminated_player = discord.utils.get(players, id=random.choice(eliminated))
+        civilian_word, spy_word = word_pair
         arcade = self.bot.get_cog("ArcadeCore")
 
-        embed = discord.Embed(title="🔍 Voting Results", color=discord.Color.red())
-        
-        if eliminated_player.id == spy.id:
-            embed.description = f"🎯 **Correct!** {eliminated_player.mention} was the Spy!\nThe words were: Civilian = `{WORDS[0][0]}`, Spy = `{WORDS[0][1]}` (or similar pair)"
-            embed.color = discord.Color.green()
-            if arcade:
-                for p in players:
-                    if p.id != spy.id:
-                        arcade.add_points(p.id, 30, "Undercover", won=True)
+        if eliminated_player and eliminated_player.id == spy.id:
+            embed = rof_embed(
+                title="🔍 ROF Undercover — Voting Results",
+                description=(
+                    f"🎯 **Civilians Win!** {eliminated_player.mention} was caught as the Spy!\n"
+                    f"**Words:** Civilian = `{civilian_word}` | Spy = `{spy_word}`"
+                ),
+                color=ROFColors.SUCCESS,
+            )
+            for p in players:
+                won = p.id != spy.id
+                db.record_game_result(
+                    user_id=p.id,
+                    game_name="Undercover",
+                    result="win" if won else "loss",
+                    score=30 if won else 0,
+                    points_earned=30 if won else 5,
+                    attempts=1,
+                    mode="multi",
+                    username=p.display_name,
+                )
         else:
-            embed.description = f"❌ **Wrong!** {eliminated_player.mention} was innocent.\nThe Spy was actually {spy.mention}!"
-            if arcade:
-                arcade.add_points(spy.id, 50, "Undercover", won=True)
+            elim_name = eliminated_player.mention if eliminated_player else "Nobody"
+            embed = rof_embed(
+                title="🔍 ROF Undercover — Voting Results",
+                description=(
+                    f"❌ **Spy Wins!** {elim_name} was innocent.\n"
+                    f"The Spy was actually **{spy.mention}**!\n"
+                    f"**Words:** Civilian = `{civilian_word}` | Spy = `{spy_word}`"
+                ),
+                color=ROFColors.ERROR,
+            )
+            for p in players:
+                won = p.id == spy.id
+                db.record_game_result(
+                    user_id=p.id,
+                    game_name="Undercover",
+                    result="win" if won else "loss",
+                    score=50 if won else 0,
+                    points_earned=50 if won else 5,
+                    attempts=1,
+                    mode="multi",
+                    username=p.display_name,
+                )
 
+        if arcade:
+            arcade.reload_cache()
         await channel.send(embed=embed)
 
-class StartVoteView(discord.ui.View):
-    def __init__(self, cog, players, spy):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.players = players
-        self.spy = spy
-
-    @discord.ui.button(label="Start Voting", style=discord.ButtonStyle.danger, emoji="🗳️")
-    async def vote_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in [p.id for p in self.players]:
-            return await interaction.response.send_message("You are not playing!", ephemeral=True)
-        
-        self.stop()
-        await interaction.response.edit_message(embed=discord.Embed(title="🗳️ Voting Started", description="Check the dropdown below to cast your vote!", color=discord.Color.dark_red()), view=None)
-        
-        vote_view = UndercoverVote(self.cog, self.players, self.spy)
-        await interaction.channel.send("Cast your votes below:", view=vote_view)
 
 async def setup(bot):
     await bot.add_cog(Undercover(bot))

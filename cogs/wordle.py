@@ -11,17 +11,16 @@ import time
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
-load_dotenv()
+from core.config import BASE_DIR, OWNER_ID, ROFColors
+from core.database import db
 
-OWNER_ID = int(os.getenv("OWNER_ID"))
-GUILD_ID = int(os.getenv("GUILD_ID"))
+load_dotenv()
 
 GREEN = '🟩'
 YELLOW = '🟨'
 GREY = '⬛'
 EMPTY = '⬜'
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANSWERS_FILE = os.path.join(BASE_DIR, 'wordle_answers.txt')
 VALID_FILE = os.path.join(BASE_DIR, 'wordle_valid.txt')
 STATS_FILE = os.path.join(BASE_DIR, 'wordle_stats.json')
@@ -57,9 +56,12 @@ def load_word_list(path):
 
 
 def is_authorized(user_id):
-    if user_id == OWNER_ID:
+    if OWNER_ID and int(user_id) == int(OWNER_ID):
         return True
-    return user_id in load_json(APPROVED_FILE, [])
+    if int(user_id) in load_json(APPROVED_FILE, []):
+        return True
+    # Allow alliance members when wordle_open_to_all is enabled in config
+    return db.get_config("wordle_open_to_all", "true").lower() == "true"
 
 
 def evaluate_guess(guess, answer):
@@ -105,7 +107,8 @@ class GuessModal(discord.ui.Modal, title="ROF Wordle — Enter your guess"):
             traceback.print_exc()
             try:
                 await interaction.response.send_message(
-                    f"❌ Internal error: `{e}`", ephemeral=True
+                    "❌ An unexpected error occurred while checking your guess. Please try again.",
+                    ephemeral=True,
                 )
             except Exception:
                 pass
@@ -114,12 +117,15 @@ class GuessModal(discord.ui.Modal, title="ROF Wordle — Enter your guess"):
 # ---------- views ----------
 
 class ShareResultView(discord.ui.View):
-    def __init__(self, cog, game, mode, stats):
+    """Preserved ShareResultView enhanced with Play Again (Practice) and Statistics buttons."""
+
+    def __init__(self, cog, game, mode, stats, user_id: int = 0):
         super().__init__(timeout=600)
         self.cog = cog
         self.game = game
         self.mode = mode
         self.stats = stats
+        self.user_id = user_id
 
     @discord.ui.button(label="Share Result", style=discord.ButtonStyle.success, emoji="📋")
     async def share_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -129,6 +135,16 @@ class ShareResultView(discord.ui.View):
             f"```\n{text}\n```",
             ephemeral=True,
         )
+
+    @discord.ui.button(label="New Practice Game", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def new_practice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.user_id and interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This isn't your game!", ephemeral=True)
+        await self.cog.start_game(interaction, 'practice', force_new=True)
+
+    @discord.ui.button(label="Statistics", style=discord.ButtonStyle.secondary, emoji="📊")
+    async def stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.send_user_stats(interaction)
 
 
 class WordleGameView(discord.ui.View):
@@ -220,7 +236,6 @@ class Wordle(commands.Cog):
                 'guess_distribution': [0, 0, 0, 0, 0, 0],
                 'total_guesses_on_win': 0,
             }
-        # backfill new field for existing entries
         self.stats[uid].setdefault('total_guesses_on_win', 0)
         return self.stats[uid]
 
@@ -263,7 +278,7 @@ class Wordle(commands.Cog):
 
     def _build_embed(self, mode, game, user_id=None):
         title = "ROF Wordle — Daily" if mode == 'daily' else "ROF Wordle — Practice"
-        embed = discord.Embed(title=title, color=discord.Color.blue())
+        embed = discord.Embed(title=title, color=ROFColors.ARENA)
         embed.description = self._render_board(game['guesses'], game['answer'])
 
         if game['guesses']:
@@ -277,17 +292,17 @@ class Wordle(commands.Cog):
 
         if game.get('finished'):
             if game.get('won'):
-                embed.color = discord.Color.green()
+                embed.color = ROFColors.SUCCESS
                 embed.add_field(
                     name="Result",
-                    value=f"🎉 **Correct in {len(game['guesses'])} guesses!**",
+                    value=f"🎉 **WIN! Correct in {len(game['guesses'])} guesses!** (Word: **{game['answer'].upper()}**)",
                     inline=False,
                 )
             else:
-                embed.color = discord.Color.red()
+                embed.color = ROFColors.ERROR
                 embed.add_field(
                     name="Result",
-                    value=f"❌ **Out of guesses.** The word was **{game['answer'].upper()}**",
+                    value=f"❌ **GAME OVER.** The word was **{game['answer'].upper()}**",
                     inline=False,
                 )
 
@@ -306,7 +321,9 @@ class Wordle(commands.Cog):
                     )
         else:
             if mode == 'daily':
-                embed.set_footer(text=f"Next word in {self._format_countdown()}")
+                embed.set_footer(text=f"Next word in {self._format_countdown()} • ROF Gaming Arena")
+            else:
+                embed.set_footer(text="ROF Gaming Arena • Unlimited Practice")
         return embed
 
     def format_share_text(self, game, mode, stats=None):
@@ -340,7 +357,7 @@ class Wordle(commands.Cog):
 
     # ---------- game flow ----------
 
-    async def start_game(self, interaction, mode):
+    async def start_game(self, interaction, mode, force_new=False):
         if not self.answers:
             await interaction.response.send_message(
                 "⚠️ Wordle is not set up (missing `wordle_answers.txt`).", ephemeral=True
@@ -364,9 +381,9 @@ class Wordle(commands.Cog):
                         f"🏆 Best: **{stats['max_streak']}**\n\n"
                         f"⏳ Next word in **{self._format_countdown()}**"
                     ),
-                    color=discord.Color.orange(),
+                    color=ROFColors.WARNING,
                 )
-                view = ShareResultView(self, game, mode, stats)
+                view = ShareResultView(self, game, mode, stats, user_id=user_id)
                 await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
                 return
 
@@ -380,7 +397,7 @@ class Wordle(commands.Cog):
                 }
                 self._save_game(user_id, mode, game)
         else:
-            if not game or game.get('finished'):
+            if force_new or not game or game.get('finished'):
                 game = {
                     'date': self._today_str(),
                     'answer': random.choice(self.answers),
@@ -397,7 +414,10 @@ class Wordle(commands.Cog):
         view = None if game.get('finished') else WordleGameView(self, user_id, mode)
 
         try:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         except discord.HTTPException as e:
             print(f"[WORDLE] send board failed: {e}")
 
@@ -410,7 +430,6 @@ class Wordle(commands.Cog):
         return 0
 
     async def process_guess(self, interaction, user_id, mode, word):
-        # Cooldown
         wait = self._check_cooldown(user_id)
         if wait > 0:
             await interaction.response.send_message(
@@ -418,7 +437,6 @@ class Wordle(commands.Cog):
             )
             return
 
-        # Format validation
         if not word or len(word) != 5 or not word.isalpha():
             await interaction.response.send_message(
                 f"❌ Must be **exactly 5 letters**. You sent: `{word or '(empty)'}`",
@@ -426,7 +444,6 @@ class Wordle(commands.Cog):
             )
             return
 
-        # Dictionary validation with suggestions
         if word not in self.valid_words:
             suggestions = self._suggest_words(word)
             hint = ""
@@ -458,17 +475,17 @@ class Wordle(commands.Cog):
         if word == game['answer']:
             game['finished'] = True
             game['won'] = True
-            self._update_stats_on_finish(user_id, mode, game)
+            self._update_stats_on_finish(user_id, mode, game, interaction.user.display_name)
         elif len(game['guesses']) >= 6:
             game['finished'] = True
             game['won'] = False
-            self._update_stats_on_finish(user_id, mode, game)
+            self._update_stats_on_finish(user_id, mode, game, interaction.user.display_name)
 
         self._save_game(user_id, mode, game)
 
         embed = self._build_embed(mode, game, user_id)
         if game.get('finished'):
-            view = ShareResultView(self, game, mode, self._get_stats(user_id))
+            view = ShareResultView(self, game, mode, self._get_stats(user_id), user_id=user_id)
         else:
             view = WordleGameView(self, user_id, mode)
 
@@ -481,31 +498,27 @@ class Wordle(commands.Cog):
             return
         game['finished'] = True
         game['won'] = False
-        self._update_stats_on_finish(user_id, mode, game)
+        self._update_stats_on_finish(user_id, mode, game, interaction.user.display_name)
         self._save_game(user_id, mode, game)
         embed = self._build_embed(mode, game, user_id)
-        view = ShareResultView(self, game, mode, self._get_stats(user_id))
+        view = ShareResultView(self, game, mode, self._get_stats(user_id), user_id=user_id)
         await self._safe_edit(interaction, embed, view)
 
     async def _safe_edit(self, interaction, embed, view):
-        """Try every route so colours never silently fail to appear."""
-        # 1. Standard modal-submit response
         try:
             await interaction.response.edit_message(embed=embed, view=view)
             return
         except discord.InteractionResponded:
-            pass  # already responded — fall through to followup
+            pass
         except Exception as e:
             print(f"[WORDLE] edit_message failed: {type(e).__name__}: {e}")
 
-        # 2. followup (works after the interaction token has been acknowledged)
         try:
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
             return
         except Exception as e:
             print(f"[WORDLE] followup failed: {type(e).__name__}: {e}")
 
-        # 3. direct message edit
         try:
             if interaction.message:
                 await interaction.message.edit(embed=embed, view=view)
@@ -513,15 +526,33 @@ class Wordle(commands.Cog):
         except Exception as e:
             print(f"[WORDLE] message.edit failed: {type(e).__name__}: {e}")
 
-        print(f"[WORDLE] !!! All edit routes failed")
+    def _update_stats_on_finish(self, user_id, mode, game, username=""):
+        won = bool(game.get('won'))
+        attempts = len(game.get('guesses', []))
+        pts = max(15, 60 - (attempts - 1) * 8) if won else 5
+        score = (7 - attempts) * 20 if won else 0
 
-    def _update_stats_on_finish(self, user_id, mode, game):
+        # Record into unified ROF database & ArcadeCore
+        db.record_game_result(
+            user_id=user_id,
+            game_name="Wordle",
+            result="win" if won else "loss",
+            score=score,
+            points_earned=pts,
+            attempts=attempts,
+            mode=mode,
+            username=username,
+        )
+        arcade = self.bot.get_cog("ArcadeCore")
+        if arcade:
+            arcade.reload_cache()
+
         if mode != 'daily':
             return
         stats = self._get_stats(user_id)
         stats['games_played'] += 1
 
-        if game.get('won'):
+        if won:
             stats['wins'] += 1
             n = len(game['guesses'])
             if 1 <= n <= 6:
@@ -552,34 +583,11 @@ class Wordle(commands.Cog):
 
         self._save_stats()
 
-    # ---------- commands ----------
-
-    @app_commands.command(name="wordle", description="Play today's daily Wordle")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def wordle_cmd(self, interaction: discord.Interaction):
-        if not is_authorized(interaction.user.id):
-            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
-            return
-        await self.start_game(interaction, 'daily')
-
-    @app_commands.command(name="wordle_practice", description="Play unlimited practice Wordle")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def wordle_practice_cmd(self, interaction: discord.Interaction):
-        if not is_authorized(interaction.user.id):
-            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
-            return
-        await self.start_game(interaction, 'practice')
-
-    @app_commands.command(name="wordle_stats", description="View your Wordle statistics")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def wordle_stats_cmd(self, interaction: discord.Interaction):
-        if not is_authorized(interaction.user.id):
-            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
-            return
+    async def send_user_stats(self, interaction: discord.Interaction):
         stats = self._get_stats(interaction.user.id)
         embed = discord.Embed(
             title=f"📊 {interaction.user.display_name}'s Wordle Stats",
-            color=discord.Color.blue(),
+            color=ROFColors.ARENA,
         )
         played, wins = stats['games_played'], stats['wins']
         win_rate = round(wins / played * 100) if played else 0
@@ -605,8 +613,30 @@ class Wordle(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # ---------- commands ----------
+
+    @app_commands.command(name="wordle", description="Play today's daily Wordle")
+    async def wordle_cmd(self, interaction: discord.Interaction):
+        if not is_authorized(interaction.user.id):
+            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
+            return
+        await self.start_game(interaction, 'daily')
+
+    @app_commands.command(name="wordle_practice", description="Play unlimited practice Wordle")
+    async def wordle_practice_cmd(self, interaction: discord.Interaction):
+        if not is_authorized(interaction.user.id):
+            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
+            return
+        await self.start_game(interaction, 'practice')
+
+    @app_commands.command(name="wordle_stats", description="View your Wordle statistics")
+    async def wordle_stats_cmd(self, interaction: discord.Interaction):
+        if not is_authorized(interaction.user.id):
+            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
+            return
+        await self.send_user_stats(interaction)
+
     @app_commands.command(name="wordle_leaderboard", description="View the ROF Wordle leaderboard")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def wordle_leaderboard_cmd(self, interaction: discord.Interaction):
         if not is_authorized(interaction.user.id):
             await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
@@ -619,14 +649,22 @@ class Wordle(commands.Cog):
             key=lambda x: (x[1].get('wins', 0), x[1].get('current_streak', 0), -x[1].get('games_played', 1)),
             reverse=True,
         )
-        embed = discord.Embed(title="🏆 ROF Wordle Leaderboard", color=discord.Color.gold())
+        embed = discord.Embed(title="🏆 ROF Wordle Leaderboard", color=ROFColors.GOLD)
         lines = []
         for i, (uid, s) in enumerate(entries[:10], 1):
-            try:
-                user = await self.bot.fetch_user(int(uid))
-                name = user.display_name
-            except Exception:
-                name = f"User {uid}"
+            name = None
+            if interaction.guild:
+                m = interaction.guild.get_member(int(uid))
+                if m:
+                    name = m.display_name
+            if not name:
+                u = self.bot.get_user(int(uid))
+                if u:
+                    name = u.display_name
+            if not name:
+                p_prof = db.get_player_profile(int(uid))
+                name = p_prof.get("username") or f"User {uid}"
+
             medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(i, f"`#{i}`")
             played, wins = s.get('games_played', 0), s.get('wins', 0)
             wr = round(wins / played * 100) if played else 0
@@ -634,11 +672,10 @@ class Wordle(commands.Cog):
                 f"{medal} **{name}** — {wins}W/{played}G ({wr}%) · 🔥{s.get('current_streak', 0)} · 🏆{s.get('max_streak', 0)}"
             )
         embed.description = '\n'.join(lines)
-        embed.set_footer(text="Ranked by wins → current streak")
+        embed.set_footer(text="Ranked by wins → current streak • ROF Gaming Arena")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="wordle_help", description="Learn how to play ROF Wordle")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def wordle_help_cmd(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🔤 ROF Wordle — Rules",
@@ -657,10 +694,10 @@ class Wordle(commands.Cog):
                 "• Only official Wordle words are accepted — not every English word.\n"
                 "• If a word is rejected, the bot suggests close matches.\n"
                 "• Use the **📋 Share Result** button to copy a spoiler-free result.\n"
-                "• Only **daily** games count for stats and the leaderboard.\n"
-                f"• New word every day at **00:00 UTC**."
+                "• Only **daily** games count for daily streaks.\n"
+                "• New word every day at **00:00 UTC**."
             ),
-            color=discord.Color.blue(),
+            color=ROFColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

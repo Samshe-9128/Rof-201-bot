@@ -1,215 +1,325 @@
 # cogs/events.py
+import uuid
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta, timezone
-import json
-import os
-import uuid
-from dotenv import load_dotenv
+from typing import List, Optional
 
-load_dotenv()
-
-OWNER_ID = int(os.getenv("OWNER_ID"))
-GUILD_ID = int(os.getenv("GUILD_ID"))
-EVENT_CHANNEL_ID = int(os.getenv("EVENT_CHANNEL_ID"))
-TZ_OFFSET = float(os.getenv("SERVER_TZ_OFFSET", -2))
-
-SERVER_TZ = timezone(timedelta(hours=TZ_OFFSET))
-EVENTS_FILE = "events.json"
-
-def load_events():
-    try:
-        with open(EVENTS_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-def save_events(events):
-    with open(EVENTS_FILE, "w") as f:
-        json.dump(events, f, indent=4)
-
-def is_admin_or_owner(interaction: discord.Interaction):
-    if interaction.user.id == OWNER_ID:
-        return True
-    # Handle DMs safely
-    if not interaction.guild:
-        return False
-    if interaction.user.guild_permissions.administrator:
-        return True
-    return False
+from core.config import (
+    DEFAULT_TZ_OFFSET,
+    EVENT_CHANNEL_ID,
+    ROFColors,
+    format_dual_timestamps,
+    get_game_tz,
+)
+from core.database import db
+from core.permissions import ensure_admin, is_admin_interaction
+from core.ui import PaginatedEmbedView, rof_embed
 
 
-# ---------- EVENT SETUP MODAL ----------
+def parse_event_datetime(date_str: str, time_str: str, tz_offset: float = None) -> datetime:
+    """Parse YYYY-MM-DD and HH:MM in Game Time (default UTC-2) and return timezone-aware datetime."""
+    game_tz = get_game_tz(tz_offset)
+    clean_date = date_str.strip()
+    clean_time = time_str.strip()
+    dt = datetime.strptime(f"{clean_date} {clean_time}", "%Y-%m-%d %H:%M")
+    return dt.replace(tzinfo=game_tz)
 
-class EventCreateModal(discord.ui.Modal, title="Schedule New Event"):
+
+def build_event_detail_embed(ev: dict, title_prefix: str = "📅 ROF EVENT DETAILS") -> discord.Embed:
+    tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
+    start_dt = datetime.fromisoformat(ev["start_time_utc"])
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    dual = format_dual_timestamps(start_dt, tz_off)
+    rem_mins = ev.get("reminder_minutes", 10)
+    dur_mins = ev.get("duration_minutes", 60)
+    status = ev.get("status", "scheduled").upper()
+
+    desc = (
+        f"**Event:** {ev['name']}\n"
+        f"**Event ID:** `{ev['id']}`\n"
+        f"**Date:** {dual['short_date']} ({dual['date_str']})\n"
+        f"**Game Time:** `{dual['game_time']}`\n"
+        f"**India Time:** `{dual['india_time']}`\n"
+        f"**Your Local Time:** {dual['discord_full']} ({dual['discord_relative']})\n"
+        f"**Duration:** `{dur_mins} mins` | **Status:** `{status}`\n"
+        f"**Reminder:** `{rem_mins} minutes before`"
+    )
+    if ev.get("description"):
+        desc += f"\n\n**Description:**\n{ev['description']}"
+
+    color = ROFColors.SUCCESS if status == "SCHEDULED" else ROFColors.ERROR
+    return rof_embed(title=title_prefix, description=desc, color=color, footer_extra=f"Event ID: {ev['id']}")
+
+
+# ---------- MODALS & VIEWS ----------
+
+class EventCreateOrEditModal(discord.ui.Modal):
     event_name = discord.ui.TextInput(
         label="Event Name",
-        placeholder="e.g., Alliance Brawl",
-        max_length=50,
-        required=True
+        placeholder="e.g., Surge / Alliance Brawl",
+        max_length=60,
+        required=True,
     )
     event_date = discord.ui.TextInput(
         label="Date (YYYY-MM-DD)",
-        placeholder="e.g., 2026-05-15",
+        placeholder="e.g., 2026-11-12",
         min_length=10,
         max_length=10,
-        required=True
+        required=True,
     )
     event_time = discord.ui.TextInput(
-        label="Time (HH:MM) - Server Time",
-        placeholder="e.g., 14:30",
+        label="Game Time (HH:MM in UTC-2)",
+        placeholder="e.g., 16:00",
         min_length=5,
         max_length=5,
-        required=True
+        required=True,
+    )
+    description = discord.ui.TextInput(
+        label="Event Description (Optional)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Rally instructions, requirements, or special notes...",
+        max_length=500,
+        required=False,
+    )
+    duration_minutes = discord.ui.TextInput(
+        label="Duration in Minutes (Optional, default 60)",
+        placeholder="60",
+        max_length=4,
+        required=False,
     )
 
-    def __init__(self, cog):
-        super().__init__()
+    def __init__(
+        self,
+        cog: "Events",
+        channel_id: Optional[int] = None,
+        existing_event: Optional[dict] = None,
+    ):
+        title = f"Edit Event ({existing_event['id']})" if existing_event else "Create ROF Alliance Event"
+        super().__init__(title=title)
         self.cog = cog
+        self.channel_id = channel_id
+        self.existing_event = existing_event
+
+        if existing_event:
+            tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
+            dt = datetime.fromisoformat(existing_event["start_time_utc"]).astimezone(get_game_tz(tz_off))
+            self.event_name.default = existing_event["name"]
+            self.event_date.default = dt.strftime("%Y-%m-%d")
+            self.event_time.default = dt.strftime("%H:%M")
+            self.description.default = existing_event.get("description", "")
+            self.duration_minutes.default = str(existing_event.get("duration_minutes", 60))
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Acknowledge the interaction immediately so it doesn't time out while we process
+        if not await ensure_admin(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
 
+        tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
         try:
-            # 1. Validate Date and Time Format
-            date_str = self.event_date.value.strip()
-            time_str = self.event_time.value.strip()
-            
-            try:
-                event_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=SERVER_TZ)
-            except ValueError:
-                return await interaction.followup.send("❌ **Invalid Date/Time Format!** Please ensure you use `YYYY-MM-DD` for the date and `HH:MM` (24-hour format) for the time.", ephemeral=True)
-
-            # 2. Validate Future Date
-            if event_dt <= datetime.now(SERVER_TZ):
-                return await interaction.followup.send("❌ **Time Travel Error!** You cannot schedule an event in the past. Please choose a future time.", ephemeral=True)
-
-            # 3. Validate Channel Exists
-            target_channel = self.cog.bot.get_channel(EVENT_CHANNEL_ID)
-            if not target_channel:
-                return await interaction.followup.send("❌ **Configuration Error:** I cannot find the announcement channel. Please check the `EVENT_CHANNEL_ID` in your `.env` file.", ephemeral=True)
-
-            # 4. Send Announcement FIRST (If this fails, we don't save the event)
-            try:
-                await target_channel.send(
-                    f"@everyone 📢 **ROF EVENT ANNOUNCEMENT**\n\n"
-                    f"⚔️ **{self.event_name.value}**\n"
-                    f"Event starts at **<t:{int(event_dt.timestamp())}:F>**\n"
-                    f"*Automatically converts to your local time!*\n\n"
-                    f"Get ready, ROF! 🔥",
-                    allowed_mentions=discord.AllowedMentions(everyone=True)
-                )
-            except discord.Forbidden:
-                return await interaction.followup.send(f"❌ **Permission Error:** I do not have permission to send messages in {target_channel.mention}. Please check my role permissions.", ephemeral=True)
-            except Exception as e:
-                return await interaction.followup.send(f"❌ **Discord Error:** Failed to send announcement. `{e}`", ephemeral=True)
-
-            # 5. Save Event to Database
-            event_id = str(uuid.uuid4())[:6]
-            event_data = {
-                "id": event_id,
-                "name": self.event_name.value,
-                "time": event_dt.isoformat(),
-                "channel": EVENT_CHANNEL_ID,
-                "reminder_sent": False,
-                "creator": interaction.user.id
-            }
-
-            self.cog.events.append(event_data)
-            save_events(self.cog.events)
-
-            # 6. Success Message
-            await interaction.followup.send(
-                f"✅ **Success!** Event **{self.event_name.value}** has been scheduled (ID: `{event_id}`).\n"
-                f"The announcement was sent to {target_channel.mention}.", 
-                ephemeral=True
+            event_dt = parse_event_datetime(self.event_date.value, self.event_time.value, tz_off)
+        except ValueError:
+            return await interaction.followup.send(
+                "❌ **Invalid Date or Time Format!** Use `YYYY-MM-DD` (e.g., `2026-11-12`) and 24-hour `HH:MM` (e.g., `16:00`).",
+                ephemeral=True,
             )
 
-        except Exception as e:
-            # Ultimate safety net for any unexpected Python errors
-            print(f"CRITICAL ERROR in EventCreateModal: {e}")
-            await interaction.followup.send(f"❌ **Unexpected Error:** Something went wrong while scheduling the event.\n`{e}`", ephemeral=True)
+        if event_dt <= datetime.now(timezone.utc):
+            return await interaction.followup.send(
+                "❌ **Past Time Rejected!** Please schedule the event for a future time.",
+                ephemeral=True,
+            )
+
+        dur_raw = (self.duration_minutes.value or "60").strip()
+        if not dur_raw.isdigit() or int(dur_raw) <= 0 or int(dur_raw) > 1440:
+            return await interaction.followup.send(
+                "❌ **Invalid Duration!** Duration must be between `1` and `1440` minutes.",
+                ephemeral=True,
+            )
+        dur_val = int(dur_raw)
+
+        default_chan = int(db.get_config("event_channel_id", str(EVENT_CHANNEL_ID or 0)) or 0)
+        target_chan_id = self.channel_id or (
+            self.existing_event["channel_id"] if self.existing_event else default_chan
+        ) or (interaction.channel.id if interaction.channel else 0)
+
+        rem_default = int(db.get_config("default_reminder_minutes", "10") or 10)
+
+        if self.existing_event:
+            updated = db.update_event(
+                event_id=self.existing_event["id"],
+                name=self.event_name.value,
+                description=self.description.value or "",
+                start_time_utc=event_dt,
+                duration_minutes=dur_val,
+                channel_id=target_chan_id,
+            )
+            db.log_audit(interaction.user.id, "event_edit", f"Edited event {updated['id']} ({updated['name']})")
+            embed = build_event_detail_embed(updated, title_prefix="✅ EVENT UPDATED")
+            view = EventConfirmationView(self.cog, updated["id"])
+            return await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        event_id = str(uuid.uuid4())[:6]
+        created = db.create_event(
+            event_id=event_id,
+            name=self.event_name.value,
+            description=self.description.value or "",
+            start_time_utc=event_dt,
+            duration_minutes=dur_val,
+            channel_id=target_chan_id,
+            creator_id=interaction.user.id,
+            reminder_minutes=rem_default,
+        )
+        db.log_audit(interaction.user.id, "event_create", f"Created event {event_id} ({created['name']})")
+
+        # Send announcement to configured channel if reachable
+        target_channel = self.cog.bot.get_channel(target_chan_id)
+        if target_channel:
+            try:
+                dual = format_dual_timestamps(event_dt, tz_off)
+                ann_embed = rof_embed(
+                    title=f"📢 ROF EVENT SCHEDULED — {created['name'].upper()}",
+                    description=(
+                        f"{created['description']}\n\n" if created.get("description") else ""
+                    )
+                    + (
+                        f"📅 **Date:** {dual['short_date']}\n"
+                        f"🕒 **Game Time:** `{dual['game_time']}`\n"
+                        f"🇮🇳 **India Time:** `{dual['india_time']}`\n"
+                        f"🌍 **Your Time:** {dual['discord_full']} ({dual['discord_relative']})\n"
+                        f"🔔 **Reminder:** {rem_default} minutes before start"
+                    ),
+                    color=ROFColors.GOLD,
+                    footer_extra=f"Event ID: {event_id}",
+                )
+                await target_channel.send(embed=ann_embed)
+            except Exception as e:
+                print(f"[EVENTS] Notice: could not post announcement to channel {target_chan_id}: {e}")
+
+        # Build Part 6.1 Confirmation Screen
+        dual = format_dual_timestamps(event_dt, tz_off)
+        confirm_embed = rof_embed(
+            title="✅ EVENT CREATED",
+            description=(
+                f"**Event:** {created['name']}\n"
+                f"**Event ID:** `{created['id']}`\n"
+                f"**Date:** {dual['short_date']}\n"
+                f"**Game Time:** `{dual['game_time_short']}` (`UTC-02:00`)\n"
+                f"**India Time:** `{dual['india_time_short']}` (`Asia/Kolkata`)\n"
+                f"**Reminder:** {created['reminder_minutes']} minutes before."
+            ),
+            color=ROFColors.SUCCESS,
+            footer_extra=f"Event ID: {created['id']}",
+        )
+        view = EventConfirmationView(self.cog, created["id"])
+        await interaction.followup.send(embed=confirm_embed, view=view, ephemeral=True)
 
 
-# ---------- EVENT SETUP VIEW ----------
+class EventConfirmationView(discord.ui.View):
+    """Part 6.1 Confirmation buttons: [Edit Event] [View Event]."""
+
+    def __init__(self, cog: "Events", event_id: str):
+        super().__init__(timeout=300.0)
+        self.cog = cog
+        self.event_id = event_id
+
+    @discord.ui.button(label="Edit Event", style=discord.ButtonStyle.primary, emoji="✏️")
+    async def edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await ensure_admin(interaction):
+            return
+        ev = db.get_event(self.event_id)
+        if not ev:
+            return await interaction.response.send_message("❌ Event no longer exists.", ephemeral=True)
+        await interaction.response.send_modal(EventCreateOrEditModal(self.cog, existing_event=ev))
+
+    @discord.ui.button(label="View Event", style=discord.ButtonStyle.secondary, emoji="👁️")
+    async def view_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ev = db.get_event(self.event_id)
+        if not ev:
+            return await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+        await interaction.response.send_message(embed=build_event_detail_embed(ev), ephemeral=True)
+
 
 class EventSetupView(discord.ui.View):
-    def __init__(self, cog):
+    def __init__(self, cog: "Events"):
         super().__init__(timeout=None)
         self.cog = cog
 
     @discord.ui.button(label="Create Event", style=discord.ButtonStyle.success, emoji="➕")
     async def create_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin_or_owner(interaction):
-            return await interaction.response.send_message("❌ Only administrators can create events.", ephemeral=True)
-        
-        try:
-            await interaction.response.send_modal(EventCreateModal(self.cog))
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Could not open the setup menu: {e}", ephemeral=True)
+        if not await ensure_admin(interaction):
+            return
+        await interaction.response.send_modal(EventCreateOrEditModal(self.cog))
 
 
 # ---------- COG ----------
 
 class Events(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.events = load_events()
         self.reminder_task.start()
 
     def cog_unload(self):
         self.reminder_task.cancel()
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=20)
     async def reminder_task(self):
-        now = datetime.now(SERVER_TZ)
-        changed = False
+        await self.process_due_reminders()
 
-        for event in self.events:
-            if event.get("reminder_sent"):
+    async def process_due_reminders(self) -> int:
+        """Check and send all due event reminders, persisting status to prevent duplicates."""
+        due_events = db.get_due_reminders()
+        sent_count = 0
+        tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
+
+        for ev in due_events:
+            # Mark as sent first or immediately upon processing to prevent duplicate notifications
+            db.mark_reminder_sent(ev["id"])
+            chan_id = int(ev.get("channel_id") or db.get_config("event_channel_id", str(EVENT_CHANNEL_ID or 0)) or 0)
+            if not chan_id:
+                continue
+
+            channel = self.bot.get_channel(chan_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(chan_id)
+                except Exception:
+                    channel = None
+
+            if not channel:
                 continue
 
             try:
-                event_dt = datetime.fromisoformat(event["time"])
-                reminder_dt = event_dt - timedelta(minutes=30)
+                start_dt = datetime.fromisoformat(ev["start_time_utc"])
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                dual = format_dual_timestamps(start_dt, tz_off)
+                rem_mins = ev.get("reminder_minutes", 10)
 
-                # If event has passed, mark as sent so we stop checking it
-                if now >= event_dt:
-                    event["reminder_sent"] = True
-                    changed = True
-                    continue
-
-                # If it's time to remind
-                if now >= reminder_dt:
-                    channel = self.bot.get_channel(event["channel"])
-                    if not channel:
-                        channel = await self.bot.fetch_channel(event["channel"])
-                    
-                    await channel.send(
-                        f"@everyone 🔔 **ROF EVENT REMINDER!**\n\n"
-                        f"⚔️ **{event['name']}**\n"
-                        f"Starts in 30 minutes!\n"
-                        f"🕒 Event time: <t:{int(event_dt.timestamp())}:t>\n\n"
-                        f"Get your heroes ready! 🔥",
-                        allowed_mentions=discord.AllowedMentions(everyone=True)
-                    )
-                    event["reminder_sent"] = True
-                    changed = True
-            except discord.NotFound:
-                print(f"Warning: Could not find channel {event.get('channel')} for event {event.get('name')}.")
-                event["reminder_sent"] = True
-                changed = True
-            except discord.Forbidden:
-                print(f"Warning: Missing permissions to send reminder for event {event.get('name')}.")
-                event["reminder_sent"] = True
-                changed = True
+                embed = rof_embed(
+                    title=f"🔔 ROF EVENT REMINDER — {ev['name'].upper()}",
+                    description=(
+                        f"⚔️ **{ev['name']}** starts in **{rem_mins} minutes**!\n"
+                        + (f"\n{ev['description']}\n\n" if ev.get("description") else "\n")
+                        + f"🕒 **Game Time:** `{dual['game_time']}`\n"
+                        f"🇮🇳 **India Time:** `{dual['india_time']}`\n"
+                        f"🌍 **Discord Timestamp:** {dual['discord_full']} ({dual['discord_relative']})"
+                    ),
+                    color=ROFColors.WARNING,
+                    footer_extra=f"Event ID: {ev['id']}",
+                )
+                await channel.send(
+                    content="@everyone 🔔 **ROF Alliance Event Reminder!**",
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(everyone=True),
+                )
+                sent_count += 1
             except Exception as e:
-                print(f"Error processing reminder for {event.get('name')}: {e}")
+                print(f"[EVENTS] Reminder send error for {ev['id']}: {e}")
 
-        if changed:
-            save_events(self.events)
+        return sent_count
 
     @reminder_task.before_loop
     async def before_reminder(self):
@@ -217,60 +327,131 @@ class Events(commands.Cog):
 
     # ---------- COMMANDS ----------
 
-    @app_commands.command(name="event", description="Open the Event Setup Panel (Admin/Owner only)")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def event_panel(self, interaction: discord.Interaction):
-        if not is_admin_or_owner(interaction):
-            return await interaction.response.send_message("❌ Only Server Administrators or the Bot Owner can use this.", ephemeral=True)
-
-        embed = discord.Embed(
-            title="⚔️ ROF Event Manager",
-            description="Click the button below to schedule a new alliance event.\n\nOnce created, the bot will announce it in the designated channel and remind everyone 30 minutes before it starts.",
-            color=discord.Color.blue()
-        )
-        view = EventSetupView(self)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @app_commands.command(name="events", description="View upcoming events")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @app_commands.command(name="events", description="View upcoming ROF alliance events in Game Time & India Time")
     async def list_events(self, interaction: discord.Interaction):
-        try:
-            now = datetime.now(SERVER_TZ)
-            upcoming = [e for e in self.events if datetime.fromisoformat(e["time"]) > now]
+        upcoming = db.get_upcoming_events(include_cancelled=False)
+        if not upcoming:
+            embed = rof_embed(
+                title="📅 ROF UPCOMING EVENTS",
+                description="No upcoming events are currently scheduled. ⚔️",
+                color=ROFColors.INFO,
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-            if not upcoming:
-                return await interaction.response.send_message("No upcoming events. ⚔️", ephemeral=True)
+        tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
+        per_page = 4
+        pages: List[discord.Embed] = []
 
-            upcoming.sort(key=lambda x: x["time"])
-            desc = ""
-            for e in upcoming:
-                dt = datetime.fromisoformat(e["time"])
-                desc += f"**{e['name']}** (ID: `{e.get('id', '???')}`)\n"
-                desc += f"🕒 <t:{int(dt.timestamp())}:F> (<t:{int(dt.timestamp())}:R>)\n\n"
+        for idx in range(0, len(upcoming), per_page):
+            chunk = upcoming[idx : idx + per_page]
+            embed = rof_embed(
+                title="⚔️ ROF UPCOMING ALLIANCE EVENTS",
+                description="All times shown in **Game Time (`UTC-2`)**, **India Time (`IST`)**, and your local time:",
+                color=ROFColors.ARENA,
+            )
+            for ev in chunk:
+                dt = datetime.fromisoformat(ev["start_time_utc"])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                dual = format_dual_timestamps(dt, tz_off)
+                desc_line = f"📝 *{ev['description']}*\n" if ev.get("description") else ""
+                val = (
+                    f"{desc_line}"
+                    f"📅 **Date:** {dual['short_date']} | **Status:** `{ev['status'].upper()}`\n"
+                    f"🕒 **Game Time:** `{dual['game_time']}`\n"
+                    f"🇮🇳 **India Time:** `{dual['india_time']}`\n"
+                    f"⏳ **Countdown:** {dual['discord_relative']} ({dual['discord_short']})"
+                )
+                embed.add_field(
+                    name=f"⚔️ {ev['name']} (ID: `{ev['id']}`)",
+                    value=val,
+                    inline=False,
+                )
+            pages.append(embed)
 
-            embed = discord.Embed(title="⚔️ ROF UPCOMING EVENTS", description=desc, color=discord.Color.blue())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error loading events: `{e}`", ephemeral=True)
+        if len(pages) == 1:
+            await interaction.response.send_message(embed=pages[0], ephemeral=True)
+        else:
+            view = PaginatedEmbedView(interaction.user.id, pages)
+            await interaction.response.send_message(embed=pages[0], view=view, ephemeral=True)
 
-    @app_commands.command(name="event_cancel", description="Cancel an event (Admin/Owner)")
+    # Structured /event command group (Part 6 & Part 11: create, edit, cancel, delete, view)
+    event_group = app_commands.Group(name="event", description="ROF Alliance Event Management & Viewing")
+
+    @event_group.command(name="create", description="Create a new ROF alliance event (Admin/Owner only)")
+    @app_commands.describe(channel="Optional announcement channel (defaults to configured Event Channel)")
+    async def event_create_cmd(
+        self,
+        interaction: discord.Interaction,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        if not await ensure_admin(interaction):
+            return
+        chan_id = channel.id if channel else None
+        await interaction.response.send_modal(EventCreateOrEditModal(self, channel_id=chan_id))
+
+    @event_group.command(name="edit", description="Edit an existing alliance event (Admin/Owner only)")
+    @app_commands.describe(event_id="The 6-character ID of the event to edit")
+    async def event_edit_cmd(self, interaction: discord.Interaction, event_id: str):
+        if not await ensure_admin(interaction):
+            return
+        ev = db.get_event(event_id)
+        if not ev:
+            return await interaction.response.send_message(
+                f"❌ Event ID `{event_id}` not found.", ephemeral=True
+            )
+        await interaction.response.send_modal(EventCreateOrEditModal(self, existing_event=ev))
+
+    @event_group.command(name="cancel", description="Cancel a scheduled alliance event (Admin/Owner only)")
+    @app_commands.describe(event_id="The 6-character ID of the event to cancel")
+    async def event_cancel_cmd(self, interaction: discord.Interaction, event_id: str):
+        if not await ensure_admin(interaction):
+            return
+        ev = db.cancel_or_delete_event(event_id, delete_permanently=False)
+        if not ev:
+            return await interaction.response.send_message(
+                f"❌ Event ID `{event_id}` not found.", ephemeral=True
+            )
+        db.log_audit(interaction.user.id, "event_cancel", f"Cancelled event {event_id} ({ev['name']})")
+        embed = rof_embed(
+            title="🚫 EVENT CANCELLED",
+            description=f"Event **{ev['name']}** (`{ev['id']}`) has been cancelled and its pending reminder has been cleared.",
+            color=ROFColors.WARNING,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @event_group.command(name="delete", description="Permanently delete an alliance event (Admin/Owner only)")
+    @app_commands.describe(event_id="The 6-character ID of the event to delete")
+    async def event_delete_cmd(self, interaction: discord.Interaction, event_id: str):
+        if not await ensure_admin(interaction):
+            return
+        ev = db.cancel_or_delete_event(event_id, delete_permanently=True)
+        if not ev:
+            return await interaction.response.send_message(
+                f"❌ Event ID `{event_id}` not found.", ephemeral=True
+            )
+        db.log_audit(interaction.user.id, "event_delete", f"Deleted event {event_id} ({ev['name']})")
+        await interaction.response.send_message(
+            f"🗑️ Event **{ev['name']}** (`{ev['id']}`) has been permanently deleted.", ephemeral=True
+        )
+
+    @event_group.command(name="view", description="View full details and timezone conversions for an event")
+    @app_commands.describe(event_id="The 6-character ID of the event")
+    async def event_view_cmd(self, interaction: discord.Interaction, event_id: str):
+        ev = db.get_event(event_id)
+        if not ev:
+            return await interaction.response.send_message(
+                f"❌ Event ID `{event_id}` not found. Use `/events` to see all upcoming event IDs.",
+                ephemeral=True,
+            )
+        await interaction.response.send_message(embed=build_event_detail_embed(ev), ephemeral=True)
+
+    # Preserved legacy /event_cancel command
+    @app_commands.command(name="event_cancel", description="Cancel an event by ID (Admin/Owner)")
     @app_commands.describe(event_id="The short ID of the event (e.g. a1b2c3)")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def cancel_event(self, interaction: discord.Interaction, event_id: str):
-        if not is_admin_or_owner(interaction):
-            return await interaction.response.send_message("❌ Only Administrators can cancel events.", ephemeral=True)
-
-        event = next((e for e in self.events if e.get("id") == event_id), None)
-        if not event:
-            return await interaction.response.send_message("❌ Event ID not found.", ephemeral=True)
-
-        try:
-            self.events.remove(event)
-            save_events(self.events)
-            await interaction.response.send_message(f"🗑️ Event **{event['name']}** cancelled successfully.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to cancel event: `{e}`", ephemeral=True)
+    async def cancel_event_legacy(self, interaction: discord.Interaction, event_id: str):
+        await self.event_cancel_cmd.callback(self, interaction, event_id)
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(Events(bot))
