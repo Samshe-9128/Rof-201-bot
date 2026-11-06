@@ -2,6 +2,7 @@
 import asyncio
 import random
 import time
+import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -21,6 +22,9 @@ SEQUENCE_PALETTE = [
     ("🟣", "Purple"),
     ("🟠", "Orange"),
 ]
+
+RATE_LIMIT_WINDOW = 3600
+RATE_LIMIT_MAX = 10
 
 
 # ==============================================================================
@@ -42,13 +46,14 @@ class SequenceMemoryView(discord.ui.View):
         self.memorizing = True
         self.finished = False
 
-        for emoji_char, label in SEQUENCE_PALETTE:
+        # fix K: enumerate avoids O(n) index() lookup per button.
+        for idx, (emoji_char, label) in enumerate(SEQUENCE_PALETTE):
             btn = discord.ui.Button(
                 label=label,
                 emoji=emoji_char,
                 style=discord.ButtonStyle.secondary,
                 disabled=True,
-                row=0 if SEQUENCE_PALETTE.index((emoji_char, label)) < 3 else 1,
+                row=0 if idx < 3 else 1,
             )
             btn.callback = self._make_color_callback(emoji_char)
             self.add_item(btn)
@@ -84,36 +89,54 @@ class SequenceMemoryView(discord.ui.View):
 
     def _make_color_callback(self, emoji_char: str):
         async def _callback(interaction: discord.Interaction):
-            if not await ensure_session_player(interaction, self.user.id, "play this Memory Challenge"):
-                return
-            if self.memorizing or self.finished:
-                return await interaction.response.defer()
+            # fix C: catch every exception so modal/button never hangs.
+            try:
+                if not await ensure_session_player(interaction, self.user.id, "play this Memory Challenge"):
+                    return
+                if self.memorizing or self.finished:
+                    return await interaction.response.defer()
 
-            expected_idx = len(self.player_input)
-            self.player_input.append(emoji_char)
+                expected_idx = len(self.player_input)
+                self.player_input.append(emoji_char)
 
-            # Check if the clicked item matches the sequence at this position
-            if emoji_char != self.sequence[expected_idx]:
-                self.finished = True
-                self.stop()
-                await self._handle_game_over(interaction)
-                return
+                # Wrong item → game over.
+                if emoji_char != self.sequence[expected_idx]:
+                    self.finished = True
+                    self.stop()
+                    await self._handle_game_over(interaction)
+                    return
 
-            # Check if entire sequence for this level is complete
-            if len(self.player_input) >= self.seq_length:
-                self.finished = True
-                self.stop()
-                new_score = self.score + (self.level * 15)
-                next_level = self.level + 1
-                next_view = SequenceMemoryView(self.cog, self.user, level=next_level, score=new_score)
-                await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
-                asyncio.create_task(next_view.reveal_then_hide(interaction))
-            else:
-                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+                # Sequence for this level complete → next level.
+                if len(self.player_input) >= self.seq_length:
+                    self.finished = True
+                    self.stop()
+                    new_score = self.score + (self.level * 15)
+                    next_level = self.level + 1
+                    next_view = SequenceMemoryView(self.cog, self.user, level=next_level, score=new_score)
+                    await interaction.response.edit_message(embed=next_view.build_embed(), view=next_view)
+                    asyncio.create_task(next_view.reveal_then_hide(interaction))
+                else:
+                    await interaction.response.edit_message(embed=self.build_embed(), view=self)
+            except discord.InteractionResponded:
+                pass
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"[MEMORY] sequence callback error: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(
+                            "⚠️ Something went wrong. Please start a new game with `/memory`.",
+                            ephemeral=True,
+                        )
+                except Exception:
+                    pass
 
         return _callback
 
     async def reveal_then_hide(self, interaction: discord.Interaction):
+        # fix F: log errors instead of swallowing them.
         try:
             delay = min(6.0, 2.2 + (self.seq_length * 0.45))
             await asyncio.sleep(delay)
@@ -124,26 +147,39 @@ class SequenceMemoryView(discord.ui.View):
                 if isinstance(child, discord.ui.Button):
                     child.disabled = False
             await interaction.edit_original_response(embed=self.build_embed(), view=self)
-        except Exception:
+        except discord.NotFound:
+            # Message was deleted while memorizing — nothing to do.
             pass
+        except Exception as e:
+            print(f"[MEMORY] reveal_then_hide failed: {type(e).__name__}: {e}")
 
     async def _handle_game_over(self, interaction: discord.Interaction):
         highest_level = self.level
         pts = max(10, (self.level - 1) * 15 + 10)
         won = self.level >= 3
-        db.record_game_result(
-            user_id=self.user.id,
-            game_name="Memory Challenge",
-            result="win" if won else "loss",
-            score=self.score,
-            points_earned=pts,
-            attempts=self.level,
-            mode="single",
-            username=self.user.display_name,
-        )
+
+        # fix A: never let DB block the game-over screen.
+        try:
+            db.record_game_result(
+                user_id=self.user.id,
+                game_name="Memory Challenge",
+                result="win" if won else "loss",
+                score=self.score,
+                points_earned=pts,
+                attempts=self.level,
+                mode="single",
+                username=self.user.display_name,
+            )
+        except Exception as e:
+            print(f"[MEMORY] DB record failed (Challenge): {type(e).__name__}: {e}")
+
+        # fix D: arcade reload is best-effort only.
         arcade = self.cog.bot.get_cog("ArcadeCore")
         if arcade:
-            arcade.reload_cache()
+            try:
+                arcade.reload_cache()
+            except Exception as e:
+                print(f"[MEMORY] arcade reload_cache failed: {e}")
 
         embed = rof_embed(
             title="🧠 ROF MEMORY CHALLENGE — GAME OVER",
@@ -158,7 +194,25 @@ class SequenceMemoryView(discord.ui.View):
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(self.user, "Memory Challenge", self.cog.start_sequence_memory)
-        await interaction.response.edit_message(embed=embed, view=res_view)
+
+        # fix J: disable old buttons before swapping views.
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                try:
+                    child.disabled = True
+                except Exception:
+                    pass
+
+        # fix B: handle both NotFound and InteractionResponded.
+        try:
+            await interaction.response.edit_message(embed=embed, view=res_view)
+        except (discord.NotFound, discord.InteractionResponded):
+            try:
+                await interaction.followup.send(embed=embed, view=res_view, ephemeral=True)
+            except Exception as e:
+                print(f"[MEMORY] challenge game-over fallback failed: {e}")
+        except Exception as e:
+            print(f"[MEMORY] challenge game-over edit failed: {e}")
 
 
 # ==============================================================================
@@ -196,19 +250,27 @@ class MemoryLobby(discord.ui.View):
 
         uid = str(interaction.user.id)
         now = time.time()
-        history = [t for t in self.cog.play_history.get(uid, []) if now - t < 3600]
 
-        if len(history) >= 10:
+        # fix H: prune every time so history never grows unbounded.
+        history = [t for t in self.cog.play_history.get(uid, []) if now - t < RATE_LIMIT_WINDOW]
+        self.cog.play_history[uid] = history
+
+        if len(history) >= RATE_LIMIT_MAX:
             return await interaction.response.send_message(
-                "⏳ **Slow down!** You have played 10 Pair Match games this hour. Try Sequence Challenge or take a short break!",
+                "⏳ **Slow down!** You have played 10 Pair Match games this hour. "
+                "Try Sequence Challenge or take a short break!",
                 ephemeral=True,
             )
 
         history.append(now)
-        self.cog.play_history[uid] = history
 
         game_view = MemoryGameView(self.cog, self.user, "easy", preview=True)
-        await interaction.response.edit_message(embed=game_view.get_embed(preview=True), view=game_view)
+        try:
+            await interaction.response.edit_message(embed=game_view.get_embed(preview=True), view=game_view)
+        except Exception as e:
+            print(f"[MEMORY] preview start failed: {e}")
+            return
+
         await asyncio.sleep(3.0)
 
         for child in game_view.children:
@@ -218,10 +280,22 @@ class MemoryLobby(discord.ui.View):
                 child.disabled = False
 
         game_view.is_locked = False
+
+        # fix I: broader fallback so reveal never silently dies.
         try:
             await interaction.edit_original_response(embed=game_view.get_embed(preview=False), view=game_view)
         except discord.NotFound:
             pass
+        except Exception as e:
+            print(f"[MEMORY] preview reveal failed: {e}")
+
+    async def on_timeout(self):
+        # fix E: disable buttons so the dead lobby doesn't look clickable.
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
 
 
 class MemoryGameView(discord.ui.View):
@@ -235,6 +309,7 @@ class MemoryGameView(discord.ui.View):
         self.pairs = 8
         self.cols = 4
         self.total_cards = 16
+        self._ended = False  # idempotent end_game guard
 
         deck = EMOJIS[: self.pairs] * 2
         random.shuffle(deck)
@@ -268,13 +343,20 @@ class MemoryGameView(discord.ui.View):
             desc = f"Find all {self.pairs} pairs!\n\n**Moves:** `{self.moves}`\n**Matches:** `{self.matches}/{self.pairs}`"
             color = ROFColors.ARENA
 
-        return rof_embed(title=title, description=desc, color=color, footer_extra=f"Player: {self.user.display_name}")
+        return rof_embed(
+            title=title,
+            description=desc,
+            color=color,
+            footer_extra=f"Player: {self.user.display_name}",
+        )
 
     def make_callback(self, index):
         async def callback(interaction: discord.Interaction):
             try:
                 if interaction.user.id != self.user.id:
-                    return await interaction.response.send_message("This isn't your game!", ephemeral=True)
+                    return await interaction.response.send_message(
+                        "This isn't your game!", ephemeral=True
+                    )
 
                 if self.is_locked or index in self.matched or index in self.revealed:
                     return await interaction.response.defer()
@@ -319,23 +401,38 @@ class MemoryGameView(discord.ui.View):
 
                         self.revealed = []
                         self.is_locked = False
+
                         try:
                             await interaction.edit_original_response(embed=self.get_embed(), view=self)
                         except discord.NotFound:
                             pass
+                        except Exception as e:
+                            print(f"[MEMORY] flip-back edit failed: {e}")
                 else:
                     await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
             except discord.NotFound:
                 pass
+            except discord.InteractionResponded:
+                pass
             except Exception as e:
-                print(f"Memory Game Error: {e}")
+                print(f"[MEMORY] match callback error: {type(e).__name__}: {e}")
+                traceback.print_exc()
 
         return callback
 
     async def end_game(self, interaction):
+        # fix J: idempotent — never end twice even if a stray click arrives.
+        if self._ended:
+            return
+        self._ended = True
+
         for child in self.children:
             if isinstance(child, discord.ui.Button):
-                child.disabled = True
+                try:
+                    child.disabled = True
+                except Exception:
+                    pass
 
         points = max(10, 50 - (self.moves * 3))
         embed = self.get_embed()
@@ -344,25 +441,41 @@ class MemoryGameView(discord.ui.View):
         embed.description = f"You cleared the board in **{self.moves} moves**!"
         embed.add_field(name="Points Earned", value=f"**+{points} Arcade Points**", inline=False)
 
-        db.record_game_result(
-            user_id=self.user.id,
-            game_name="Memory Match",
-            result="win",
-            score=points,
-            points_earned=points,
-            attempts=self.moves,
-            mode="single",
-            username=self.user.display_name,
-        )
+        # fix A: DB failure must not block the win screen.
+        try:
+            db.record_game_result(
+                user_id=self.user.id,
+                game_name="Memory Match",
+                result="win",
+                score=points,
+                points_earned=points,
+                attempts=self.moves,
+                mode="single",
+                username=self.user.display_name,
+            )
+        except Exception as e:
+            print(f"[MEMORY] DB record failed (Match): {type(e).__name__}: {e}")
+
+        # fix D: arcade reload best-effort only.
         arcade = self.cog.bot.get_cog("ArcadeCore")
         if arcade:
-            arcade.reload_cache()
+            try:
+                arcade.reload_cache()
+            except Exception as e:
+                print(f"[MEMORY] arcade reload_cache failed: {e}")
 
         view = PlayAgainView(self.cog, self.user)
+
+        # fix B: catch both NotFound and InteractionResponded.
         try:
             await interaction.response.edit_message(embed=embed, view=view)
-        except discord.NotFound:
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except (discord.NotFound, discord.InteractionResponded):
+            try:
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            except Exception as e:
+                print(f"[MEMORY] match game-over fallback failed: {e}")
+        except Exception as e:
+            print(f"[MEMORY] match game-over edit failed: {e}")
 
 
 class PlayAgainView(discord.ui.View):
@@ -374,9 +487,14 @@ class PlayAgainView(discord.ui.View):
     @discord.ui.button(label="Play Again", style=discord.ButtonStyle.success, emoji="🔄")
     async def play_again(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
-            return await interaction.response.send_message("This isn't your game!", ephemeral=True)
+            return await interaction.response.send_message(
+                "This isn't your game!", ephemeral=True
+            )
         lobby = MemoryLobby(self.cog, self.user)
-        await interaction.response.edit_message(embed=lobby.get_embed(), view=lobby)
+        try:
+            await interaction.response.edit_message(embed=lobby.get_embed(), view=lobby)
+        except Exception as e:
+            print(f"[MEMORY] play-again edit failed: {e}")
 
 
 class Memory(commands.Cog):
@@ -385,17 +503,35 @@ class Memory(commands.Cog):
         self.play_history = {}
 
     async def start_sequence_memory(self, interaction: discord.Interaction):
-        view = SequenceMemoryView(self, interaction.user, level=1, score=0)
-        if interaction.response.is_done():
-            await interaction.edit_original_response(embed=view.build_embed(), view=view)
-        else:
-            await interaction.response. edit_message(embed=view.build_embed(), view=view)
-        asyncio.create_task(view.reveal_then_hide(interaction))
+        try:
+            view = SequenceMemoryView(self, interaction.user, level=1, score=0)
+            # fix G: typo `response. edit_message` removed.
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=view.build_embed(), view=view)
+            else:
+                await interaction.response.edit_message(embed=view.build_embed(), view=view)
+            asyncio.create_task(view.reveal_then_hide(interaction))
+        except Exception as e:
+            print(f"[MEMORY] start_sequence_memory failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Could not start Memory Challenge. Please try `/memory` again.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
 
-    @app_commands.command(name="memory", description="Play ROF Memory Challenge (Sequence) or Emoji Pair Match")
+    @app_commands.command(
+        name="memory",
+        description="Play ROF Memory Challenge (Sequence) or Emoji Pair Match",
+    )
     async def memory(self, interaction: discord.Interaction):
         lobby = MemoryLobby(self, interaction.user)
-        await interaction.response.send_message(embed=lobby.get_embed(), view=lobby, ephemeral=True)
+        await interaction.response.send_message(
+            embed=lobby.get_embed(), view=lobby, ephemeral=True
+        )
 
 
 async def setup(bot):

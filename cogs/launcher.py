@@ -1,8 +1,10 @@
 # cogs/launcher.py
+import traceback
+from typing import Optional
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
 
 from core.config import ROFColors, get_rank
 from core.database import db
@@ -37,6 +39,44 @@ MULTIPLAYER_CATALOG = [
 ]
 
 
+# ==============================================================================
+# HELPERS
+# ==============================================================================
+
+def _disable_all(view: discord.ui.View) -> None:
+    for child in view.children:
+        try:
+            child.disabled = True
+        except Exception:
+            pass
+
+
+async def _safe_edit(interaction: discord.Interaction, embed: discord.Embed, view: discord.ui.View) -> None:
+    try:
+        await interaction.response.edit_message(embed=embed, view=view)
+    except (discord.NotFound, discord.InteractionResponded):
+        try:
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as e:
+            print(f"[LAUNCHER] safe_edit followup failed: {e}")
+    except Exception as e:
+        print(f"[LAUNCHER] safe_edit failed: {type(e).__name__}: {e}")
+
+
+async def _notify_error(interaction: discord.Interaction, message: str = "⚠️ Could not launch that game. Please try again.") -> None:
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(message, ephemeral=True)
+        else:
+            await interaction.followup.send(message, ephemeral=True)
+    except Exception:
+        pass
+
+
+# ==============================================================================
+# SINGLE-PLAYER MENU
+# ==============================================================================
+
 class SinglePlayerMenuView(discord.ui.View):
     def __init__(self, bot: commands.Bot, user: discord.abc.User):
         super().__init__(timeout=180.0)
@@ -47,7 +87,11 @@ class SinglePlayerMenuView(discord.ui.View):
             discord.SelectOption(label=title, value=key, description=desc[:100])
             for key, title, desc in SINGLE_PLAYER_CATALOG
         ]
-        self.select = discord.ui.Select(placeholder="Select a Single-Player Game to launch...", options=options, row=0)
+        self.select = discord.ui.Select(
+            placeholder="Select a Single-Player Game to launch...",
+            options=options,
+            row=0,
+        )
         self.select.callback = self._on_select
         self.add_item(self.select)
 
@@ -61,40 +105,100 @@ class SinglePlayerMenuView(discord.ui.View):
         )
 
     async def _on_select(self, interaction: discord.Interaction):
+        # fix F: user-match guard (defense in depth).
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
+        if not self.select.values:
+            return
         choice = self.select.values[0]
+
+        # fix B: guard the whole dispatch — a failed launch must not hang the interaction.
+        try:
+            await self._dispatch(interaction, choice)
+        except Exception as e:
+            print(f"[LAUNCHER] single dispatch error ({choice}): {type(e).__name__}: {e}")
+            traceback.print_exc()
+            await _notify_error(interaction)
+
+    async def _dispatch(self, interaction: discord.Interaction, choice: str) -> None:
         sp_cog = self.bot.get_cog("SinglePlayerGames")
         wordle_cog = self.bot.get_cog("Wordle")
         mem_cog = self.bot.get_cog("Memory")
         qd_cog = self.bot.get_cog("QuickDraw")
 
-        if choice == "wordle_daily" and wordle_cog:
+        # fix A: explicit per-choice routing with clear "cog unavailable" feedback.
+        if choice == "wordle_daily":
+            if not wordle_cog:
+                return await _notify_error(interaction, "⚠️ Wordle is currently unavailable.")
             await wordle_cog.start_game(interaction, "daily")
-        elif choice == "wordle_practice" and wordle_cog:
+
+        elif choice == "wordle_practice":
+            if not wordle_cog:
+                return await _notify_error(interaction, "⚠️ Wordle is currently unavailable.")
             await wordle_cog.start_game(interaction, "practice", force_new=True)
-        elif choice == "word_scramble" and sp_cog:
+
+        elif choice == "word_scramble":
+            if not sp_cog:
+                return await _notify_error(interaction, "⚠️ Word Scramble is currently unavailable.")
             await sp_cog.launch_word_scramble(interaction)
-        elif choice == "memory_sequence" and mem_cog:
+
+        elif choice in ("memory_sequence", "memory_pairs"):
+            if not mem_cog:
+                return await _notify_error(interaction, "⚠️ Memory is currently unavailable.")
             await mem_cog.memory(interaction)
-        elif choice == "memory_pairs" and mem_cog:
-            await mem_cog.memory(interaction)
-        elif choice == "quick_math" and sp_cog:
+
+        elif choice == "quick_math":
+            if not sp_cog:
+                return await _notify_error(interaction, "⚠️ Quick Math is currently unavailable.")
             await sp_cog.launch_quick_math(interaction)
-        elif choice == "reaction_solo" and qd_cog:
+
+        elif choice == "reaction_solo":
+            if not qd_cog:
+                return await _notify_error(interaction, "⚠️ Reaction Speed Test is currently unavailable.")
             await qd_cog.launch_single_reaction_menu(interaction)
-        elif choice == "trivia_solo" and sp_cog:
+
+        elif choice == "trivia_solo":
+            if not sp_cog:
+                return await _notify_error(interaction, "⚠️ Trivia is currently unavailable.")
             await sp_cog.launch_trivia(interaction)
-        elif choice == "rps_solo" and sp_cog:
+
+        elif choice == "rps_solo":
+            if not sp_cog:
+                return await _notify_error(interaction, "⚠️ Rock Paper Scissors is currently unavailable.")
             await sp_cog.launch_rps(interaction)
-        elif choice == "number_guess" and sp_cog:
+
+        elif choice == "number_guess":
+            if not sp_cog:
+                return await _notify_error(interaction, "⚠️ Number Guessing is currently unavailable.")
             await sp_cog.launch_number_guessing(interaction)
-        elif choice == "emoji_solo" and sp_cog:
+
+        elif choice == "emoji_solo":
+            if not sp_cog:
+                return await _notify_error(interaction, "⚠️ Emoji Guessing is currently unavailable.")
             await sp_cog.launch_emoji_guessing(interaction)
+
+        else:
+            await _notify_error(interaction, "⚠️ Unknown game selection.")
 
     @discord.ui.button(label="Back to Arena", style=discord.ButtonStyle.secondary, emoji="⬅️", row=1)
     async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
         main_view = GamingArenaMainView(self.bot, interaction.user)
-        await interaction.response.edit_message(embed=main_view.build_embed(), view=main_view)
+        await _safe_edit(interaction, main_view.build_embed(), main_view)
 
+    async def on_timeout(self):
+        # fix G: disable stale buttons on timeout.
+        _disable_all(self)
+
+
+# ==============================================================================
+# MULTIPLAYER MENU
+# ==============================================================================
 
 class MultiplayerMenuView(discord.ui.View):
     def __init__(self, bot: commands.Bot, user: discord.abc.User):
@@ -106,7 +210,11 @@ class MultiplayerMenuView(discord.ui.View):
             discord.SelectOption(label=title, value=key, description=desc[:100])
             for key, title, desc in MULTIPLAYER_CATALOG
         ]
-        self.select = discord.ui.Select(placeholder="Select a Multiplayer Game to create a room...", options=options, row=0)
+        self.select = discord.ui.Select(
+            placeholder="Select a Multiplayer Game to create a room...",
+            options=options,
+            row=0,
+        )
         self.select.callback = self._on_select
         self.add_item(self.select)
 
@@ -115,37 +223,80 @@ class MultiplayerMenuView(discord.ui.View):
         return rof_embed(
             title="🏟️ ROF GAMING ARENA — MULTIPLAYER",
             description=(
-                "Choose a multiplayer game below to create a **Public Game Room** in this channel so alliance members can join:\n\n"
-                + "\n".join(lines)
+                "Choose a multiplayer game below to create a **Public Game Room** "
+                "in this channel so alliance members can join:\n\n" + "\n".join(lines)
             ),
             color=ROFColors.ARENA,
             footer_extra=f"Host: {self.user.display_name}",
         )
 
     async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
+        if not self.select.values:
+            return
         choice = self.select.values[0]
+
+        try:
+            await self._dispatch(interaction, choice)
+        except Exception as e:
+            print(f"[LAUNCHER] multi dispatch error ({choice}): {type(e).__name__}: {e}")
+            traceback.print_exc()
+            await _notify_error(interaction)
+
+    async def _dispatch(self, interaction: discord.Interaction, choice: str) -> None:
         cb_cog = self.bot.get_cog("Codebreaker")
         qd_cog = self.bot.get_cog("QuickDraw")
         mp_cog = self.bot.get_cog("MultiplayerGames")
         uc_cog = self.bot.get_cog("Undercover")
         c4_cog = self.bot.get_cog("Connect4")
 
-        if choice == "codebreaker" and cb_cog:
+        if choice == "codebreaker":
+            if not cb_cog:
+                return await _notify_error(interaction, "⚠️ Codebreaker is currently unavailable.")
             await cb_cog.open_room(interaction, min_players=1)
-        elif choice == "reaction_race" and qd_cog:
+
+        elif choice == "reaction_race":
+            if not qd_cog:
+                return await _notify_error(interaction, "⚠️ Reaction Race is currently unavailable.")
             await qd_cog.open_reaction_race_room(interaction)
-        elif choice in ("word_race", "math_battle", "trivia_battle", "rps_multi", "emoji_race") and mp_cog:
+
+        elif choice in ("word_race", "math_battle", "trivia_battle", "rps_multi", "emoji_race"):
+            if not mp_cog:
+                return await _notify_error(interaction, "⚠️ Multiplayer games are currently unavailable.")
             await mp_cog.open_multiplayer_room(interaction, choice)
-        elif choice == "undercover" and uc_cog:
+
+        elif choice == "undercover":
+            if not uc_cog:
+                return await _notify_error(interaction, "⚠️ Undercover is currently unavailable.")
             await uc_cog.open_undercover_room(interaction)
-        elif choice == "connect4" and c4_cog:
+
+        elif choice == "connect4":
+            if not c4_cog:
+                return await _notify_error(interaction, "⚠️ Connect 4 is currently unavailable.")
             await c4_cog.open_connect4_room(interaction)
+
+        else:
+            await _notify_error(interaction, "⚠️ Unknown game selection.")
 
     @discord.ui.button(label="Back to Arena", style=discord.ButtonStyle.secondary, emoji="⬅️", row=1)
     async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
         main_view = GamingArenaMainView(self.bot, interaction.user)
-        await interaction.response.edit_message(embed=main_view.build_embed(), view=main_view)
+        await _safe_edit(interaction, main_view.build_embed(), main_view)
 
+    async def on_timeout(self):
+        _disable_all(self)
+
+
+# ==============================================================================
+# MAIN ARENA MENU
+# ==============================================================================
 
 class GamingArenaMainView(discord.ui.View):
     """Part 2.1 Central Gaming Main Menu (/games)."""
@@ -156,7 +307,14 @@ class GamingArenaMainView(discord.ui.View):
         self.user = user
 
     def build_embed(self) -> discord.Embed:
-        active_rooms = room_manager.list_active_rooms()
+        # fix I: never let room_manager hiccup kill the whole menu.
+        try:
+            active_rooms = room_manager.list_active_rooms()
+            room_count = len(active_rooms)
+        except Exception as e:
+            print(f"[LAUNCHER] list_active_rooms failed: {type(e).__name__}: {e}")
+            room_count = 0
+
         return rof_embed(
             title="🎮 ROF GAMING ARENA",
             description=(
@@ -164,7 +322,7 @@ class GamingArenaMainView(discord.ui.View):
                 "Choose how you want to play using the controls below.\n\n"
                 "🎯 **Single Player** — 10 solo skill, puzzle, trivia, and reflex games\n"
                 "🏟️ **Multiplayer** — Create or join live alliance game rooms\n"
-                f"🔥 **Active Games** — `{len(active_rooms)}` room(s) currently active\n"
+                f"🔥 **Active Games** — `{room_count}` room(s) currently active\n"
                 "🏆 **Leaderboard** — Overall, Weekly, and Per-Game rankings\n"
                 "👤 **My Profile** — Personal win rate, best score, and reaction stats\n"
                 "📖 **Game Help** — Rules and tips for every ROF game"
@@ -173,56 +331,118 @@ class GamingArenaMainView(discord.ui.View):
             footer_extra=f"Player: {self.user.display_name}",
         )
 
+    def _is_owner(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+
     @discord.ui.button(label="Single Player", style=discord.ButtonStyle.primary, emoji="🎯", row=0)
     async def single_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction):
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
         view = SinglePlayerMenuView(self.bot, interaction.user)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        await _safe_edit(interaction, view.build_embed(), view)
 
     @discord.ui.button(label="Multiplayer", style=discord.ButtonStyle.success, emoji="🏟️", row=0)
     async def multi_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction):
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
         view = MultiplayerMenuView(self.bot, interaction.user)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        await _safe_edit(interaction, view.build_embed(), view)
 
     @discord.ui.button(label="Active Games", style=discord.ButtonStyle.secondary, emoji="🔥", row=1)
     async def active_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        rooms = room_manager.list_active_rooms()
+        if not self._is_owner(interaction):
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
+        # fix E: safe iteration over rooms.
+        try:
+            rooms = room_manager.list_active_rooms()
+        except Exception as e:
+            print(f"[LAUNCHER] list_active_rooms failed: {type(e).__name__}: {e}")
+            rooms = []
+
         if not rooms:
             embed = rof_embed(
                 title="🔥 ROF ACTIVE GAMES",
-                description="There are no open multiplayer rooms right now.\nClick **Multiplayer** to host a new room!",
+                description=(
+                    "There are no open multiplayer rooms right now.\n"
+                    "Click **Multiplayer** to host a new room!"
+                ),
                 color=ROFColors.INFO,
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         lines = []
         for r in rooms:
-            lines.append(
-                f"• **`{r.room_id}`** — **{r.game_title}** | Host: {r.host.mention} | "
-                f"Players: `{len(r.players)}/{r.max_players}` | Status: `{r.status.upper()}`"
-            )
+            try:
+                host_mention = getattr(r.host, "mention", str(r.host))
+                max_players = getattr(r, "max_players", "?")
+                status = str(getattr(r, "status", "unknown")).upper()
+                players_count = len(getattr(r, "players", []))
+                lines.append(
+                    f"• **`{r.room_id}`** — **{r.game_title}** | Host: {host_mention} | "
+                    f"Players: `{players_count}/{max_players}` | Status: `{status}`"
+                )
+            except Exception as e:
+                print(f"[LAUNCHER] room render failed: {e}")
+
         embed = rof_embed(
             title="🔥 ROF ACTIVE MULTIPLAYER ROOMS",
-            description="\n".join(lines),
+            description="\n".join(lines) or "*No rooms to display.*",
             color=ROFColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.secondary, emoji="🏆", row=1)
     async def lb_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction):
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
+        # fix H: don't silently no-op if ArcadeCore is missing.
         arcade = self.bot.get_cog("ArcadeCore")
-        if arcade:
+        if not arcade:
+            return await interaction.response.send_message(
+                "⚠️ Leaderboard is currently unavailable.", ephemeral=True
+            )
+        try:
             await arcade.send_leaderboard_interactive(interaction, ephemeral=True)
+        except Exception as e:
+            print(f"[LAUNCHER] leaderboard failed: {type(e).__name__}: {e}")
+            await _notify_error(interaction, "⚠️ Could not open the leaderboard right now.")
 
     @discord.ui.button(label="My Profile", style=discord.ButtonStyle.secondary, emoji="👤", row=2)
     async def profile_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction):
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
         arcade = self.bot.get_cog("ArcadeCore")
-        if arcade:
+        if not arcade:
+            return await interaction.response.send_message(
+                "⚠️ Player profiles are currently unavailable.", ephemeral=True
+            )
+        try:
             await arcade.send_profile_embed(interaction, interaction.user, ephemeral=True)
+        except Exception as e:
+            print(f"[LAUNCHER] profile failed: {type(e).__name__}: {e}")
+            await _notify_error(interaction, "⚠️ Could not open your profile right now.")
 
     @discord.ui.button(label="Game Help", style=discord.ButtonStyle.secondary, emoji="📖", row=2)
     async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction):
+            return await interaction.response.send_message(
+                "This isn't your menu!", ephemeral=True
+            )
         embed = build_game_help_embed()
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def on_timeout(self):
+        _disable_all(self)
 
 
 def build_game_help_embed() -> discord.Embed:
@@ -263,14 +483,32 @@ def build_game_help_embed() -> discord.Embed:
     return embed
 
 
+# ==============================================================================
+# COG
+# ==============================================================================
+
 class Launcher(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(name="games", description="Open the central ROF Gaming Arena menu")
     async def games_cmd(self, interaction: discord.Interaction):
-        view = GamingArenaMainView(self.bot, interaction.user)
-        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
+        try:
+            view = GamingArenaMainView(self.bot, interaction.user)
+            await interaction.response.send_message(
+                embed=view.build_embed(), view=view, ephemeral=True
+            )
+        except Exception as e:
+            print(f"[LAUNCHER] /games failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Could not open the Gaming Arena right now. Please try again.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
 
     @app_commands.command(name="help", description="View the complete ROF Bot command & feature guide")
     async def help_cmd(self, interaction: discord.Interaction):
@@ -311,47 +549,97 @@ class Launcher(commands.Cog):
         )
         embed.add_field(
             name="🤖 Alliance AI Assistant",
-            value="Send me a Direct Message (or ask in the configured alliance channel) about upcoming events, rules, strategies, or how to play any game!",
+            value=(
+                "Send me a Direct Message (or ask in the configured alliance channel) about "
+                "upcoming events, rules, strategies, or how to play any game!"
+            ),
             inline=False,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # /game command group (Part 11: /game stats, /game history, /game help)
-    game_group = app_commands.Group(name="game", description="ROF Gaming statistics, match history, and help")
+    # /game command group
+    game_group = app_commands.Group(
+        name="game", description="ROF Gaming statistics, match history, and help"
+    )
 
     @game_group.command(name="stats", description="View your gaming statistics")
-    async def game_stats_cmd(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+    async def game_stats_cmd(
+        self,
+        interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+    ):
         target = member or interaction.user
         arcade = self.bot.get_cog("ArcadeCore")
-        if arcade:
+        if not arcade:
+            return await interaction.response.send_message(
+                "⚠️ Player stats are currently unavailable.", ephemeral=True
+            )
+        try:
             await arcade.send_profile_embed(interaction, target, ephemeral=True)
+        except Exception as e:
+            print(f"[LAUNCHER] /game stats failed: {type(e).__name__}: {e}")
+            await _notify_error(interaction, "⚠️ Could not load stats right now.")
 
     @game_group.command(name="history", description="View your recent match history")
-    async def game_history_cmd(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+    async def game_history_cmd(
+        self,
+        interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+    ):
         target = member or interaction.user
-        rows = db.get_player_history(target.id, limit=10)
-        if not rows:
+
+        # fix C: DB call must not crash the command.
+        try:
+            rows = db.get_player_history(target.id, limit=10)
+        except Exception as e:
+            print(f"[LAUNCHER] get_player_history failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
             return await interaction.response.send_message(
-                f"ℹ️ No recorded matches yet for **{target.display_name}**. Use `/games` to play!",
+                "⚠️ Could not load match history right now. Please try again.",
                 ephemeral=True,
             )
+
+        if not rows:
+            return await interaction.response.send_message(
+                f"ℹ️ No recorded matches yet for **{target.display_name}**. "
+                f"Use `/games` to play!",
+                ephemeral=True,
+            )
+
+        # fix D: safe per-row rendering.
         lines = []
         for r in rows:
-            icon = {"win": "🟢 WIN", "loss": "🔴 LOSS", "draw": "🟡 DRAW"}.get(r["result"], r["result"])
-            react_note = f" · ⚡ `{r['reaction_ms']} ms`" if r.get("reaction_ms") else ""
-            lines.append(
-                f"• <t:{r['played_at']}:R> — **{r['game_name']}** ({icon}) · Score: `{r['score']}` (`+{r['points_earned']} pts`){react_note}"
-            )
+            try:
+                result = r.get("result", "?")
+                icon = {
+                    "win": "🟢 WIN",
+                    "loss": "🔴 LOSS",
+                    "draw": "🟡 DRAW",
+                }.get(result, result)
+                reaction = r.get("reaction_ms")
+                react_note = f" · ⚡ `{reaction} ms`" if reaction else ""
+                played_at = r.get("played_at")
+                timestamp = f"<t:{played_at}:R>" if played_at else "unknown"
+                lines.append(
+                    f"• {timestamp} — **{r.get('game_name', '?')}** ({icon}) · "
+                    f"Score: `{r.get('score', 0)}` (`+{r.get('points_earned', 0)} pts`)"
+                    f"{react_note}"
+                )
+            except Exception as e:
+                print(f"[LAUNCHER] history row render failed: {e}")
+
         embed = rof_embed(
             title=f"📜 {target.display_name} — RECENT MATCH HISTORY",
-            description="\n".join(lines),
+            description="\n".join(lines) or "*No matches to display.*",
             color=ROFColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @game_group.command(name="help", description="View instructions for all ROF games")
     async def game_help_cmd(self, interaction: discord.Interaction):
-        await interaction.response.send_message(embed=build_game_help_embed(), ephemeral=True)
+        await interaction.response.send_message(
+            embed=build_game_help_embed(), ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):

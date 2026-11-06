@@ -2,6 +2,7 @@
 import asyncio
 import random
 import time
+import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -28,7 +29,9 @@ class SingleReactionActiveView(discord.ui.View):
 
     @discord.ui.button(label="WAIT...", style=discord.ButtonStyle.secondary, emoji="🛑")
     async def react_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await ensure_session_player(interaction, self.user.id, "click this reaction button"):
+        if not await ensure_session_player(
+            interaction, self.user.id, "click this reaction button"
+        ):
             return
         if self.finished:
             return await interaction.response.defer()
@@ -39,7 +42,7 @@ class SingleReactionActiveView(discord.ui.View):
         if self.wait_task and not self.wait_task.done():
             self.wait_task.cancel()
 
-        # False start check!
+        # False start check.
         if not self.ready:
             embed = rof_embed(
                 title="⚠️ ROF REACTION SPEED TEST — FALSE START!",
@@ -58,30 +61,49 @@ class SingleReactionActiveView(discord.ui.View):
 
         reaction_ms = max(1, int((now - self.signal_ts) * 1000))
         pts = max(10, 45 - (reaction_ms // 20))
-        db.record_game_result(
-            user_id=self.user.id,
-            game_name="Reaction Speed Test",
-            result="win",
-            score=max(10, 1000 - reaction_ms),
-            points_earned=pts,
-            attempts=1,
-            duration_sec=round(reaction_ms / 1000.0, 3),
-            reaction_ms=reaction_ms,
-            mode="single",
-            username=self.user.display_name,
-        )
+
+        # fix B: DB failure must not block the result screen.
+        try:
+            db.record_game_result(
+                user_id=self.user.id,
+                game_name="Reaction Speed Test",
+                result="win",
+                score=max(10, 1000 - reaction_ms),
+                points_earned=pts,
+                attempts=1,
+                duration_sec=round(reaction_ms / 1000.0, 3),
+                reaction_ms=reaction_ms,
+                mode="single",
+                username=self.user.display_name,
+            )
+        except Exception as e:
+            print(f"[QUICKDRAW] DB record failed (solo): {type(e).__name__}: {e}")
+
+        # fix G: best-effort reload.
         arcade = self.cog.bot.get_cog("ArcadeCore")
         if arcade:
-            arcade.reload_cache()
+            try:
+                arcade.reload_cache()
+            except Exception as e:
+                print(f"[QUICKDRAW] arcade reload failed: {e}")
 
-        prof = db.get_player_profile(self.user.id)
+        # fix C: safe profile access.
+        try:
+            prof = db.get_player_profile(self.user.id) or {}
+        except Exception as e:
+            print(f"[QUICKDRAW] profile fetch failed: {e}")
+            prof = {}
+
+        best_ms = prof.get("best_reaction_ms") or reaction_ms
+        avg_ms = prof.get("avg_reaction_ms") or reaction_ms
+
         embed = rof_embed(
             title="⚡ ROF REACTION SPEED TEST — RESULT",
             description=(
                 f"**READY!**\n"
                 f"⚡ **Your Reaction:** `{reaction_ms} ms`\n"
-                f"🏆 **Personal Best:** `{prof['best_reaction_ms']} ms`\n"
-                f"📊 **Average Reaction:** `{prof['avg_reaction_ms'] or reaction_ms} ms`\n"
+                f"🏆 **Personal Best:** `{best_ms} ms`\n"
+                f"📊 **Average Reaction:** `{avg_ms} ms`\n"
                 f"🏅 **Points Earned:** `+{pts} pts`"
             ),
             color=ROFColors.SUCCESS,
@@ -90,16 +112,20 @@ class SingleReactionActiveView(discord.ui.View):
         res_view = GameResultView(
             self.user, "Reaction Speed Test", self.cog.start_single_reaction
         )
-        await interaction.response.edit_message(embed=embed, view=res_view)
+        try:
+            await interaction.response.edit_message(embed=embed, view=res_view)
+        except Exception as e:
+            print(f"[QUICKDRAW] solo result edit failed: {e}")
 
     async def trigger_signal(self, interaction: discord.Interaction):
         try:
             delay = random.uniform(2.0, 5.5)
             await asyncio.sleep(delay)
-            if self.finished:
+            if self.finished or self.ready:
                 return
-            self.ready = True
-            self.signal_ts = time.perf_counter()
+
+            # Mutate button + embed *before* the edit so the message
+            # renders the READY state exactly once.
             self.react_btn.label = "READY! CLICK NOW!"
             self.react_btn.style = discord.ButtonStyle.success
             self.react_btn.emoji = "⚡"
@@ -110,11 +136,47 @@ class SingleReactionActiveView(discord.ui.View):
                 color=ROFColors.SUCCESS,
                 footer_extra=f"Player: {self.user.display_name}",
             )
+
+            # fix A: only mark ready AFTER the message edit succeeds, so a click
+            # on the still-visible WAIT button correctly becomes a false start.
             await interaction.edit_original_response(embed=embed, view=self)
+
+            if self.finished:
+                return
+            self.signal_ts = time.perf_counter()
+            self.ready = True
+
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            # fix H: log instead of swallowing.
+            print(f"[QUICKDRAW] trigger_signal error: {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+    async def on_timeout(self):
+        # fix F: safety net if the user never clicks / signal task is lost.
+        if self.finished:
+            return
+        self.finished = True
+        try:
+            if self.wait_task and not self.wait_task.done():
+                self.wait_task.cancel()
         except Exception:
             pass
+        # Try to nudge the message so the player knows to retry.
+        try:
+            embed = rof_embed(
+                title="⏰ ROF REACTION SPEED TEST — TIMED OUT",
+                description="No click registered. Click **Play Again** to retry!",
+                color=ROFColors.ERROR,
+                footer_extra=f"Player: {self.user.display_name}",
+            )
+            res_view = GameResultView(
+                self.user, "Reaction Speed Test", self.cog.start_single_reaction
+            )
+            await self.message.edit(embed=embed, view=res_view)
+        except Exception as e:
+            print(f"[QUICKDRAW] solo on_timeout edit failed: {e}")
 
 
 # ---------- MULTIPLAYER REACTION RACE (SPEC 3.2, 2–10 PLAYERS) ----------
@@ -127,9 +189,11 @@ class ReactionRaceActiveView(discord.ui.View):
         self.ready = False
         self.signal_ts: float = 0.0
         self.false_starts: Dict[int, discord.abc.User] = {}
-        self.reactions: Dict[int, int] = {}  # user_id -> ms
+        self.reactions: Dict[int, int] = {}
         self.finished = False
+        self._finished_guard = False
         self.signal_task: Optional[asyncio.Task] = None
+        self.message: Optional[discord.Message] = None
 
     def build_embed(self) -> discord.Embed:
         if not self.ready and not self.finished:
@@ -149,7 +213,10 @@ class ReactionRaceActiveView(discord.ui.View):
             desc = "Match complete! Here are the official reaction results:"
             color = ROFColors.GOLD
 
-        embed = rof_embed(title=title, description=desc, color=color, footer_extra=f"Room {self.room.room_id}")
+        embed = rof_embed(
+            title=title, description=desc, color=color,
+            footer_extra=f"Room {self.room.room_id}",
+        )
 
         status_lines = []
         sorted_valid = sorted(self.reactions.items(), key=lambda x: x[1])
@@ -163,9 +230,15 @@ class ReactionRaceActiveView(discord.ui.View):
                 medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rk, f"`#{rk}`")
                 status_lines.append(f"{medal} {p.mention} — ⚡ **`{self.reactions[p.id]} ms`**")
             else:
-                status_lines.append(f"⏳ {p.mention} — *Waiting...*" if not self.finished else f"💤 {p.mention} — *Did not click*")
+                status_lines.append(
+                    f"⏳ {p.mention} — *Waiting...*"
+                    if not self.finished
+                    else f"💤 {p.mention} — *Did not click*"
+                )
 
-        embed.add_field(name="👥 Players & Live Results", value="\n".join(status_lines), inline=False)
+        embed.add_field(
+            name="👥 Players & Live Results", value="\n".join(status_lines), inline=False
+        )
         return embed
 
     @discord.ui.button(label="WAIT FOR SIGNAL...", style=discord.ButtonStyle.secondary, emoji="🛑")
@@ -187,31 +260,31 @@ class ReactionRaceActiveView(discord.ui.View):
                 )
             if interaction.user.id in self.reactions:
                 return await interaction.response.send_message(
-                    f"✅ Your reaction (`{self.reactions[interaction.user.id]} ms`) is already recorded!",
+                    f"✅ Your reaction (`{self.reactions[interaction.user.id]} ms`) "
+                    f"is already recorded!",
                     ephemeral=True,
                 )
 
             if not self.ready:
-                # False start!
                 self.false_starts[interaction.user.id] = interaction.user
                 if len(self.false_starts) >= len(self.room.players):
                     self.finished = True
                     if self.signal_task and not self.signal_task.done():
                         self.signal_task.cancel()
                 await interaction.response.send_message(
-                    "❌ **False Start!** You clicked before the READY signal and are disqualified from this round.",
+                    "❌ **False Start!** You clicked before the READY signal and are "
+                    "disqualified from this round.",
                     ephemeral=True,
                 )
                 if self.finished:
                     await self.finish_race()
-                elif self.room.message:
+                elif self.message:
                     try:
-                        await self.room.message.edit(embed=self.build_embed(), view=self)
+                        await self.message.edit(embed=self.build_embed(), view=self)
                     except Exception:
                         pass
                 return
 
-            # Valid reaction!
             ms = max(1, int((click_ts - self.signal_ts) * 1000))
             self.reactions[interaction.user.id] = ms
             is_first = len(self.reactions) == 1
@@ -220,15 +293,16 @@ class ReactionRaceActiveView(discord.ui.View):
                 self.finished = True
 
         await interaction.response.send_message(
-            f"⚡ Reaction recorded: **`{ms} ms`**{' (First click! 🥇)' if is_first else ''}!",
+            f"⚡ Reaction recorded: **`{ms} ms`**"
+            f"{' (First click! 🥇)' if is_first else ''}!",
             ephemeral=True,
         )
 
         if self.finished:
             await self.finish_race()
-        elif self.room.message:
+        elif self.message:
             try:
-                await self.room.message.edit(embed=self.build_embed(), view=self)
+                await self.message.edit(embed=self.build_embed(), view=self)
             except Exception:
                 pass
 
@@ -236,20 +310,30 @@ class ReactionRaceActiveView(discord.ui.View):
         try:
             delay = random.uniform(2.2, 5.8)
             await asyncio.sleep(delay)
-            async with self.room.lock:
-                if self.finished:
+            if self.finished:
+                return
+
+            self.race_btn.label = "🔥 READY! CLICK NOW! 🔥"
+            self.race_btn.style = discord.ButtonStyle.success
+            self.race_btn.emoji = "⚡"
+
+            if self.message:
+                try:
+                    await self.message.edit(embed=self.build_embed(), view=self)
+                except Exception as e:
+                    print(f"[QUICKDRAW] race signal edit failed: {e}")
                     return
-                self.ready = True
-                self.signal_ts = time.perf_counter()
-                self.race_btn.label = "🔥 READY! CLICK NOW! 🔥"
-                self.race_btn.style = discord.ButtonStyle.success
-                self.race_btn.emoji = "⚡"
 
-            if self.room.message:
-                await self.room.message.edit(embed=self.build_embed(), view=self)
+            # fix A: only mark ready AFTER the message edit succeeds.
+            if self.finished:
+                return
+            self.signal_ts = time.perf_counter()
+            self.ready = True
 
-            # Give players up to 6 seconds after signal to record their reaction times
+            # 6-second window for reactions.
             await asyncio.sleep(6.0)
+            if self.finished:
+                return
             async with self.room.lock:
                 if self.finished:
                     return
@@ -257,47 +341,103 @@ class ReactionRaceActiveView(discord.ui.View):
             await self.finish_race()
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            # fix H: log instead of swallowing.
+            print(f"[QUICKDRAW] run_race_sequence error: {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+    async def on_timeout(self):
+        # fix F: safety net.
+        if self.finished:
+            return
+        try:
+            await self.finish_race()
+        except Exception as e:
+            print(f"[QUICKDRAW] race on_timeout finish failed: {e}")
+
+    def _disable_all_children(self):
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
 
     async def finish_race(self):
+        # fix I: idempotent.
+        if self._finished_guard:
+            return
+        self._finished_guard = True
+
+        self._disable_all_children()
         self.stop()
         self.room.status = "finished"
-        room_manager.close_room(self.room.room_id)
-        for child in self.children:
-            child.disabled = True
+
+        # fix L: cancel leftover timer.
+        if self.signal_task and not self.signal_task.done():
+            try:
+                self.signal_task.cancel()
+            except Exception:
+                pass
+
+        # fix D: capture message before close_room may clear it.
+        message = self.room.message or self.message
+        try:
+            room_manager.close_room(self.room.room_id)
+        except Exception as e:
+            print(f"[QUICKDRAW] close_room failed: {e}")
 
         sorted_valid = sorted(self.reactions.items(), key=lambda x: x[1])
         winner_id = sorted_valid[0][0] if sorted_valid else None
         arcade = self.cog.bot.get_cog("ArcadeCore")
 
+        # fix B: per-player DB guards.
         for p in self.room.players:
             won = winner_id is not None and p.id == winner_id
             r_ms = self.reactions.get(p.id)
             pts = 45 if won else (15 if r_ms is not None else 5)
-            db.record_game_result(
-                user_id=p.id,
-                game_name="Reaction Race",
-                result="win" if won else "loss",
-                score=max(10, 1000 - r_ms) if r_ms else 0,
-                points_earned=pts,
-                attempts=1,
-                duration_sec=round((r_ms or 0) / 1000.0, 3),
-                reaction_ms=r_ms,
-                mode="multi",
-                username=p.display_name,
-            )
+            try:
+                db.record_game_result(
+                    user_id=p.id,
+                    game_name="Reaction Race",
+                    result="win" if won else "loss",
+                    score=max(10, 1000 - r_ms) if r_ms else 0,
+                    points_earned=pts,
+                    attempts=1,
+                    duration_sec=round((r_ms or 0) / 1000.0, 3),
+                    reaction_ms=r_ms,
+                    mode="multi",
+                    username=p.display_name,
+                )
+            except Exception as e:
+                print(f"[QUICKDRAW] DB record failed ({p.id}): {e}")
+
+        # fix G: reload once, guarded.
         if arcade:
-            arcade.reload_cache()
+            try:
+                arcade.reload_cache()
+            except Exception as e:
+                print(f"[QUICKDRAW] arcade reload failed: {e}")
 
         embed = self.build_embed()
         if winner_id:
-            winner_user = next(p for p in self.room.players if p.id == winner_id)
-            embed.add_field(
-                name="🏆 Winner",
-                value=f"🎉 **{winner_user.mention}** won the race with **`{self.reactions[winner_id]} ms`**!",
-                inline=False,
-            )
+            # fix E: safe lookup.
+            winner_user = discord.utils.get(self.room.players, id=winner_id)
+            if winner_user:
+                embed.add_field(
+                    name="🏆 Winner",
+                    value=(
+                        f"🎉 **{winner_user.mention}** won the race with "
+                        f"**`{self.reactions[winner_id]} ms`**!"
+                    ),
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="🏆 Winner",
+                    value=f"🎉 User `{winner_id}` finished first with "
+                          f"**`{self.reactions[winner_id]} ms`**!",
+                    inline=False,
+                )
         else:
             embed.add_field(
                 name="🏁 Result",
@@ -306,11 +446,11 @@ class ReactionRaceActiveView(discord.ui.View):
             )
 
         rematch_view = ReactionRaceRematchView(self.cog)
-        if self.room.message:
+        if message is not None:
             try:
-                await self.room.message.edit(embed=embed, view=rematch_view)
-            except Exception:
-                pass
+                await message.edit(embed=embed, view=rematch_view)
+            except Exception as e:
+                print(f"[QUICKDRAW] race final embed edit failed: {e}")
 
 
 class ReactionRaceRematchView(discord.ui.View):
@@ -320,17 +460,30 @@ class ReactionRaceRematchView(discord.ui.View):
 
     @discord.ui.button(label="Play Again", style=discord.ButtonStyle.success, emoji="🔄")
     async def rematch_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.open_reaction_race_room(interaction)
+        try:
+            await self.cog.open_reaction_race_room(interaction)
+        except Exception as e:
+            print(f"[QUICKDRAW] rematch failed: {e}")
 
     @discord.ui.button(label="View Stats", style=discord.ButtonStyle.primary, emoji="📊")
     async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        prof = db.get_player_profile(interaction.user.id)
+        # fix J: safe profile access.
+        try:
+            prof = db.get_player_profile(interaction.user.id) or {}
+        except Exception as e:
+            print(f"[QUICKDRAW] stats profile fetch failed: {e}")
+            prof = {}
+
+        best = prof.get("best_reaction_ms")
+        avg = prof.get("avg_reaction_ms")
+        points = prof.get("points", 0)
+
         embed = rof_embed(
             title=f"⚡ {interaction.user.display_name} — Reaction Stats",
             description=(
-                f"**Best Reaction:** `{prof['best_reaction_ms'] or '—'} ms`\n"
-                f"**Average Reaction:** `{prof['avg_reaction_ms'] or '—'} ms`\n"
-                f"**Total Points:** `{prof['points']}`"
+                f"**Best Reaction:** `{best if best is not None else '—'} ms`\n"
+                f"**Average Reaction:** `{avg if avg is not None else '—'} ms`\n"
+                f"**Total Points:** `{points}`"
             ),
             color=ROFColors.ARENA,
         )
@@ -366,12 +519,31 @@ class QuickDraw(commands.Cog):
         view = SingleReactionActiveView(self, interaction.user)
         embed = rof_embed(
             title="🛑 ROF REACTION SPEED TEST",
-            description="**WAIT...**\n**WAIT...**\n*Click the button as soon as this screen turns GREEN!*",
+            description=(
+                "**WAIT...**\n**WAIT...**\n"
+                "*Click the button as soon as this screen turns GREEN!*"
+            ),
             color=ROFColors.WARNING,
             footer_extra=f"Player: {interaction.user.display_name}",
         )
-        await interaction.response.edit_message(embed=embed, view=view)
-        view.wait_task = asyncio.create_task(view.trigger_signal(interaction))
+        try:
+            await interaction.response.edit_message(embed=embed, view=view)
+            # Keep a message reference for on_timeout.
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+            view.wait_task = asyncio.create_task(view.trigger_signal(interaction))
+        except Exception as e:
+            print(f"[QUICKDRAW] start_single_reaction failed: {e}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Could not start the Reaction Test. Please try again.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
 
     async def open_reaction_race_room(self, interaction: discord.Interaction):
         existing = room_manager.get_player_active_room(interaction.user.id, "reaction_race")
@@ -390,12 +562,28 @@ class QuickDraw(commands.Cog):
         )
 
         async def _on_start(start_inter: discord.Interaction, active_room: MultiplayerRoom):
-            race_view = ReactionRaceActiveView(self, active_room)
-            await start_inter.response.edit_message(
-                embed=race_view.build_embed(), view=race_view
-            )
-            active_room.message = start_inter.message
-            race_view.signal_task = asyncio.create_task(race_view.run_race_sequence())
+            # fix K: guard view construction / first edit.
+            try:
+                race_view = ReactionRaceActiveView(self, active_room)
+                await start_inter.response.edit_message(
+                    embed=race_view.build_embed(), view=race_view
+                )
+                active_room.message = start_inter.message
+                race_view.message = start_inter.message
+                race_view.signal_task = asyncio.create_task(race_view.run_race_sequence())
+            except Exception as e:
+                print(f"[QUICKDRAW] _on_start failed: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                try:
+                    room_manager.close_room(active_room.room_id)
+                except Exception:
+                    pass
+                try:
+                    await start_inter.channel.send(
+                        "⚠️ Failed to start the Reaction Race. Please try again."
+                    )
+                except Exception:
+                    pass
 
         lobby = RoomLobbyView(
             room=room,
@@ -415,7 +603,9 @@ class QuickDraw(commands.Cog):
         name="quickdraw",
         description="Start a multiplayer Reaction Race (2-10 players) or solo Reaction Speed Test",
     )
-    @app_commands.describe(mode="Choose 'multiplayer' (2-10 players) or 'solo' (personal reaction test)")
+    @app_commands.describe(
+        mode="Choose 'multiplayer' (2-10 players) or 'solo' (personal reaction test)"
+    )
     @app_commands.choices(
         mode=[
             app_commands.Choice(name="Multiplayer Reaction Race (2-10 Players)", value="multi"),

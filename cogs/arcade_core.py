@@ -1,15 +1,17 @@
 # cogs/arcade_core.py
+import json
+import os
+import traceback
+from typing import Optional
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
 
 from core.config import RANKS, ROFColors, get_rank
 from core.database import ARCADE_FILE, db
 from core.permissions import ensure_session_player
 from core.ui import rof_embed
-import json
-import os
 
 
 def load_arcade():
@@ -23,9 +25,15 @@ def load_arcade():
 
 
 class LeaderboardFilterView(discord.ui.View):
-    """Interactive Leaderboard selector for Overall, Weekly, All-Time, and Individual Games (Part 5)."""
+    """Interactive Leaderboard selector for Overall, Weekly, and Individual Games."""
 
-    def __init__(self, cog: "ArcadeCore", user_id: int, scope: str = "overall", game_name: Optional[str] = None):
+    def __init__(
+        self,
+        cog: "ArcadeCore",
+        user_id: int,
+        scope: str = "overall",
+        game_name: Optional[str] = None,
+    ):
         super().__init__(timeout=180.0)
         self.cog = cog
         self.user_id = user_id
@@ -58,17 +66,39 @@ class LeaderboardFilterView(discord.ui.View):
         self.add_item(self.select)
 
     async def _on_select(self, interaction: discord.Interaction):
-        if not await ensure_session_player(interaction, self.user_id, "change leaderboard filters"):
+        if not await ensure_session_player(
+            interaction, self.user_id, "change leaderboard filters"
+        ):
             return
-        val = self.select.values[0]
+
+        val = self.select.values[0] if self.select.values else "overall"
         if val.startswith("game:"):
-            self.scope = "game"
-            self.game_name = val.split(":", 1)[1]
+            scope = "game"
+            game_name = val.split(":", 1)[1]
         else:
-            self.scope = val
-            self.game_name = None
-        embed = self.cog.build_leaderboard_embed(interaction.guild, self.scope, self.game_name)
-        await interaction.response.edit_message(embed=embed, view=self)
+            scope = val
+            game_name = None
+
+        # fix C: guard embed build so a DB hiccup doesn't leave a dead dropdown.
+        try:
+            embed = self.cog.build_leaderboard_embed(interaction.guild, scope, game_name)
+        except Exception as e:
+            print(f"[ARCADE] leaderboard embed build failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                return await interaction.response.send_message(
+                    "⚠️ Could not load that leaderboard right now. Please try again.",
+                    ephemeral=True,
+                )
+            except Exception:
+                return
+
+        self.scope = scope
+        self.game_name = game_name
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except Exception as e:
+            print(f"[ARCADE] leaderboard edit failed: {e}")
 
 
 class ArcadeCore(commands.Cog):
@@ -77,48 +107,111 @@ class ArcadeCore(commands.Cog):
         self.data = load_arcade()
 
     def reload_cache(self):
-        self.data = load_arcade()
+        try:
+            self.data = load_arcade()
+        except Exception as e:
+            print(f"[ARCADE] reload_cache failed: {e}")
+            self.data = {}
 
-    def add_points(self, user_id: int, points: int, game_name: str, won: bool = False) -> int:
-        """Preserved method used by legacy/existing cogs, now backed by unified SQLite database."""
-        new_pts = db.record_game_result(
-            user_id=user_id,
-            game_name=game_name,
-            result="win" if won else "loss",
-            score=points,
-            points_earned=points,
-            attempts=1,
-        )
-        self.reload_cache()
-        return new_pts
+    # ---------- points ----------
+
+    def add_points(
+        self,
+        user_id: int,
+        points: int,
+        game_name: str,
+        won: bool = False,
+    ) -> int:
+        """
+        Preserved legacy method — backed by unified SQLite DB.
+        Signature kept identical to avoid breaking existing callers.
+        """
+        # fix E: never let a DB failure cascade into the caller's flow.
+        try:
+            new_pts = db.record_game_result(
+                user_id=user_id,
+                game_name=game_name,
+                result="win" if won else "loss",
+                score=points,
+                points_earned=points,
+                attempts=1,
+            )
+        except Exception as e:
+            print(f"[ARCADE] add_points DB failure ({user_id} on {game_name}): {e}")
+            return 0
+
+        try:
+            self.reload_cache()
+        except Exception:
+            pass
+        return new_pts if new_pts is not None else 0
+
+    # ---------- profile ----------
 
     def build_profile_embed(self, target: discord.abc.User) -> discord.Embed:
-        prof = db.get_player_profile(target.id)
-        rank_name, rank_emoji = get_rank(prof["points"])
-        react_str = f"{prof['best_reaction_ms']} ms" if prof["best_reaction_ms"] is not None else "—"
+        # fix A: never trust DB not to throw.
+        try:
+            prof = db.get_player_profile(target.id) or {}
+        except Exception as e:
+            print(f"[ARCADE] get_player_profile failed ({target.id}): {e}")
+            traceback.print_exc()
+            prof = {}
+
+        # fix B + H: safe access everywhere.
+        points = int(prof.get("points", 0) or 0)
+        best_reaction_ms = prof.get("best_reaction_ms")
+        games_played = int(prof.get("games_played", 0) or 0)
+        wins = int(prof.get("wins", 0) or 0)
+        losses = int(prof.get("losses", 0) or 0)
+        draws = int(prof.get("draws", 0) or 0)
+        win_rate = prof.get("win_rate", 0)
+        best_score = prof.get("best_score", 0)
+        favourite_game = prof.get("favourite_game", "—")
+        game_stats = prof.get("game_stats") or {}
+
+        rank_name, rank_emoji = get_rank(points)
+        react_str = f"{best_reaction_ms} ms" if best_reaction_ms is not None else "—"
 
         desc = (
             f"**Player:** {target.display_name}\n"
-            f"**Rank:** {rank_emoji} **{rank_name}** (`{prof['points']} pts`)\n"
-            f"**Games Played:** `{prof['games_played']}`\n"
-            f"**Wins:** `{prof['wins']}` | **Losses:** `{prof['losses']}` | **Draws:** `{prof['draws']}`\n"
-            f"**Win Rate:** `{prof['win_rate']}%`\n"
-            f"**Best Score:** `{prof['best_score']}`\n"
-            f"**Favourite Game:** `{prof['favourite_game']}`\n"
+            f"**Rank:** {rank_emoji} **{rank_name}** (`{points} pts`)\n"
+            f"**Games Played:** `{games_played}`\n"
+            f"**Wins:** `{wins}` | **Losses:** `{losses}` | **Draws:** `{draws}`\n"
+            f"**Win Rate:** `{win_rate}%`\n"
+            f"**Best Score:** `{best_score}`\n"
+            f"**Favourite Game:** `{favourite_game}`\n"
             f"**Best Reaction:** `{react_str}`"
         )
         embed = rof_embed(
             title=f"🛡️ ROF PLAYER PROFILE — {target.display_name.upper()}",
             description=desc,
             color=ROFColors.ARENA,
-            thumbnail_url=target.display_avatar.url if hasattr(target, "display_avatar") else None,
+            thumbnail_url=(
+                target.display_avatar.url
+                if hasattr(target, "display_avatar")
+                else None
+            ),
         )
 
-        if prof["game_stats"]:
+        if game_stats:
+            # fix G: sort by most-played so the top 8 slots show the games
+            # the player actually engages with, not the first ones they tried.
+            try:
+                sorted_stats = sorted(
+                    game_stats.items(),
+                    key=lambda kv: int((kv[1] or {}).get("played", 0) or 0),
+                    reverse=True,
+                )[:8]
+            except Exception:
+                sorted_stats = list(game_stats.items())[:8]
+
             lines = []
-            for gname, st in list(prof["game_stats"].items())[:8]:
+            for gname, st in sorted_stats:
+                st = st or {}
                 lines.append(
-                    f"• **{gname}:** `{st['wins']}W` / `{st['played']}G` (Best: `{st['best_score']}`)"
+                    f"• **{gname}:** `{int(st.get('wins', 0) or 0)}W` / "
+                    f"`{int(st.get('played', 0) or 0)}G` "
+                    f"(Best: `{st.get('best_score', 0)}`)"
                 )
             embed.add_field(name="🎮 Game Breakdown", value="\n".join(lines), inline=False)
         else:
@@ -128,14 +221,22 @@ class ArcadeCore(commands.Cog):
                 inline=False,
             )
 
+        # fix F: robust rank lookup that works for 2- or 3-tuples.
         next_rank = None
-        for threshold, name, _ in RANKS:
-            if prof["points"] < threshold:
+        for entry in RANKS:
+            try:
+                threshold, name = entry[0], entry[1]
+            except (TypeError, IndexError):
+                continue
+            if points < threshold:
                 next_rank = (threshold, name)
                 break
+
         if next_rank:
-            pts_needed = next_rank[0] - prof["points"]
-            embed.set_footer(text=f"{pts_needed} points to reach {next_rank[1]} • ROF Gaming Arena")
+            pts_needed = next_rank[0] - points
+            embed.set_footer(
+                text=f"{pts_needed} points to reach {next_rank[1]} • ROF Gaming Arena"
+            )
         else:
             embed.set_footer(text="Maximum Rank Achieved (ROF Legend) • ROF Gaming Arena")
 
@@ -147,18 +248,52 @@ class ArcadeCore(commands.Cog):
         target: discord.abc.User,
         ephemeral: bool = False,
     ):
-        embed = self.build_profile_embed(target)
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        try:
+            embed = self.build_profile_embed(target)
+        except Exception as e:
+            print(f"[ARCADE] build_profile_embed crashed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                return await interaction.response.send_message(
+                    "⚠️ Could not load that profile right now. Please try again.",
+                    ephemeral=True,
+                )
+            except Exception:
+                return
 
-    def _resolve_display_name(self, guild: Optional[discord.Guild], user_id: int, fallback_name: str = "") -> str:
+        try:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        except Exception as e:
+            print(f"[ARCADE] send_profile_embed failed: {e}")
+
+    # ---------- leaderboard ----------
+
+    def _resolve_display_name(
+        self,
+        guild: Optional[discord.Guild],
+        user_id: int,
+        fallback_name: str = "",
+    ) -> str:
+        # fix I: guard the int cast.
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return fallback_name or "Unknown Warrior"
+
         if guild:
-            m = guild.get_member(int(user_id))
-            if m:
-                return m.display_name
-        u = self.bot.get_user(int(user_id))
-        if u:
-            return u.display_name
-        return fallback_name or f"Warrior #{str(user_id)[-4:]}"
+            try:
+                m = guild.get_member(uid)
+                if m:
+                    return m.display_name
+            except Exception:
+                pass
+        try:
+            u = self.bot.get_user(uid)
+            if u:
+                return u.display_name
+        except Exception:
+            pass
+        return fallback_name or f"Warrior #{str(uid)[-4:]}"
 
     def build_leaderboard_embed(
         self,
@@ -166,7 +301,14 @@ class ArcadeCore(commands.Cog):
         scope: str = "overall",
         game_name: Optional[str] = None,
     ) -> discord.Embed:
-        rows = db.get_leaderboard(scope=scope, game_name=game_name, limit=10)
+        # fix A: DB hiccup must not kill the command.
+        try:
+            rows = db.get_leaderboard(scope=scope, game_name=game_name, limit=10)
+        except Exception as e:
+            print(f"[ARCADE] get_leaderboard failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            rows = []
+
         if scope == "weekly":
             title = "🏆 ROF LEADERBOARD — WEEKLY (LAST 7 DAYS)"
         elif scope == "game" and game_name:
@@ -177,28 +319,40 @@ class ArcadeCore(commands.Cog):
         if not rows:
             return rof_embed(
                 title=title,
-                description="No recorded matches for this category yet! Use `/games` to claim the #1 spot.",
+                description=(
+                    "No recorded matches for this category yet! "
+                    "Use `/games` to claim the #1 spot."
+                ),
                 color=ROFColors.GOLD,
             )
 
         lines = []
         for idx, r in enumerate(rows, 1):
-            uid = int(r["user_id"])
+            # fix D: tolerate malformed rows instead of crashing the whole list.
+            try:
+                uid = int(r.get("user_id", 0) or 0)
+            except (TypeError, ValueError):
+                uid = 0
             name = self._resolve_display_name(guild, uid, r.get("username", ""))
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, f"`#{idx}`")
-            pts = int(r.get("points", 0))
-            wins = int(r.get("wins", 0))
-            gp = int(r.get("games_played", 0))
-            rank_name, rank_emoji = get_rank(pts)
 
             if scope == "game":
-                react_part = f" · ⚡ `{r['best_reaction_ms']} ms`" if r.get("best_reaction_ms") else ""
+                wins = int(r.get("wins", 0) or 0)
+                gp = int(r.get("games_played", 0) or 0)
+                best_reaction = r.get("best_reaction_ms")
+                react_part = f" · ⚡ `{best_reaction} ms`" if best_reaction else ""
                 lines.append(
-                    f"{medal} **{name}** — `{wins}W / {gp}G` · Best: `{r.get('best_score', 0)}`{react_part}"
+                    f"{medal} **{name}** — `{wins}W / {gp}G` · "
+                    f"Best: `{r.get('best_score', 0)}`{react_part}"
                 )
             else:
+                pts = int(r.get("points", 0) or 0)
+                wins = int(r.get("wins", 0) or 0)
+                gp = int(r.get("games_played", 0) or 0)
+                rank_name, rank_emoji = get_rank(pts)
                 lines.append(
-                    f"{medal} **{name}** — {rank_emoji} **`{pts} pts`** ({rank_name}) · `{wins}W/{gp}G`"
+                    f"{medal} **{name}** — {rank_emoji} **`{pts} pts`** "
+                    f"({rank_name}) · `{wins}W/{gp}G`"
                 )
 
         return rof_embed(
@@ -214,23 +368,61 @@ class ArcadeCore(commands.Cog):
         game_name: Optional[str] = None,
         ephemeral: bool = False,
     ):
-        embed = self.build_leaderboard_embed(interaction.guild, scope=scope, game_name=game_name)
-        view = LeaderboardFilterView(self, interaction.user.id, scope=scope, game_name=game_name)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
+        try:
+            embed = self.build_leaderboard_embed(
+                interaction.guild, scope=scope, game_name=game_name
+            )
+        except Exception as e:
+            print(f"[ARCADE] leaderboard build crashed: {e}")
+            traceback.print_exc()
+            try:
+                return await interaction.response.send_message(
+                    "⚠️ Could not load the leaderboard right now. Please try again.",
+                    ephemeral=True,
+                )
+            except Exception:
+                return
 
-    # ---------- COMMANDS (Part 5 & Part 11: /profile, /leaderboard + preserved /arcade_profile, /arcade_leaderboard) ----------
+        view = LeaderboardFilterView(
+            self, interaction.user.id, scope=scope, game_name=game_name
+        )
+        try:
+            await interaction.response.send_message(
+                embed=embed, view=view, ephemeral=ephemeral
+            )
+        except Exception as e:
+            print(f"[ARCADE] send_leaderboard_interactive failed: {e}")
 
-    @app_commands.command(name="profile", description="View your ROF Player Profile and gaming statistics")
-    async def profile_cmd(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+    # ---------- commands ----------
+
+    @app_commands.command(
+        name="profile",
+        description="View your ROF Player Profile and gaming statistics",
+    )
+    async def profile_cmd(
+        self,
+        interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+    ):
         target = member or interaction.user
         await self.send_profile_embed(interaction, target, ephemeral=False)
 
-    @app_commands.command(name="arcade_profile", description="View your ROF Arcade profile and rank")
-    async def arcade_profile_cmd(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+    @app_commands.command(
+        name="arcade_profile",
+        description="View your ROF Arcade profile and rank",
+    )
+    async def arcade_profile_cmd(
+        self,
+        interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+    ):
         target = member or interaction.user
         await self.send_profile_embed(interaction, target, ephemeral=False)
 
-    @app_commands.command(name="leaderboard", description="View the ROF Gaming Leaderboard (Overall, Weekly, and Per-Game)")
+    @app_commands.command(
+        name="leaderboard",
+        description="View the ROF Gaming Leaderboard (Overall, Weekly, and Per-Game)",
+    )
     @app_commands.describe(scope="Choose Overall All-Time or Weekly")
     @app_commands.choices(
         scope=[
@@ -238,10 +430,17 @@ class ArcadeCore(commands.Cog):
             app_commands.Choice(name="Weekly (Last 7 Days)", value="weekly"),
         ]
     )
-    async def leaderboard_cmd(self, interaction: discord.Interaction, scope: str = "overall"):
+    async def leaderboard_cmd(
+        self,
+        interaction: discord.Interaction,
+        scope: str = "overall",
+    ):
         await self.send_leaderboard_interactive(interaction, scope=scope, ephemeral=False)
 
-    @app_commands.command(name="arcade_leaderboard", description="View the global ROF Arcade leaderboard")
+    @app_commands.command(
+        name="arcade_leaderboard",
+        description="View the global ROF Arcade leaderboard",
+    )
     async def arcade_leaderboard_cmd(self, interaction: discord.Interaction):
         await self.send_leaderboard_interactive(interaction, scope="overall", ephemeral=False)
 

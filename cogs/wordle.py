@@ -86,9 +86,9 @@ def evaluate_guess(guess, answer):
 class GuessModal(discord.ui.Modal, title="ROF Wordle — Enter your guess"):
     guess_input = discord.ui.TextInput(
         label="Your 5-letter guess",
-        placeholder="Type a 5-letter word here...",
-        min_length=1,
-        max_length=10,
+        placeholder="Any 5 letters — probe words welcome!",
+        min_length=5,
+        max_length=5,
         required=True,
     )
 
@@ -181,6 +181,7 @@ class Wordle(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.answers = load_word_list(ANSWERS_FILE)
+        # Valid list kept only for optional friendlier messaging / suggestions.
         self.valid_words = set(self.answers) | set(load_word_list(VALID_FILE))
         self.stats = load_json(STATS_FILE, {})
         self.games = load_json(GAMES_FILE, {})
@@ -350,6 +351,7 @@ class Wordle(commands.Cog):
         return '\n'.join(lines)
 
     def _suggest_words(self, word, n=3):
+        """Optional helper — not used to block guesses anymore, only for info hints."""
         try:
             return difflib.get_close_matches(word, list(self.valid_words), n=n, cutoff=0.5)
         except Exception:
@@ -437,20 +439,13 @@ class Wordle(commands.Cog):
             )
             return
 
+        # Accept ANY 5-letter alphabetic word as a guess.
+        # Players often use probe/trick words (not real dictionary words)
+        # to test letters — do NOT block them.
         if not word or len(word) != 5 or not word.isalpha():
             await interaction.response.send_message(
-                f"❌ Must be **exactly 5 letters**. You sent: `{word or '(empty)'}`",
-                ephemeral=True,
-            )
-            return
-
-        if word not in self.valid_words:
-            suggestions = self._suggest_words(word)
-            hint = ""
-            if suggestions:
-                hint = " Did you mean: " + ", ".join(f"**{s.upper()}**" for s in suggestions) + "?"
-            await interaction.response.send_message(
-                f"❌ **{word.upper()}** is not in the Wordle dictionary.{hint}",
+                f"❌ Must be **exactly 5 letters** (A–Z only). "
+                f"You sent: `{word or '(empty)'}`",
                 ephemeral=True,
             )
             return
@@ -691,8 +686,9 @@ class Wordle(commands.Cog):
                 "`/wordle_leaderboard` — Alliance rankings\n"
                 "`/wordle_help` — This message\n\n"
                 "**Tips**\n"
-                "• Only official Wordle words are accepted — not every English word.\n"
-                "• If a word is rejected, the bot suggests close matches.\n"
+                "• Any 5-letter A–Z word is accepted as a guess — even non-dictionary "
+                "probe words like `XYLYL`, `FJORD`, `CRWTH`.\n"
+                "• Use probe words to test high-value letters early.\n"
                 "• Use the **📋 Share Result** button to copy a spoiler-free result.\n"
                 "• Only **daily** games count for daily streaks.\n"
                 "• New word every day at **00:00 UTC**."

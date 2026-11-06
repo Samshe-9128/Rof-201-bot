@@ -1,4 +1,5 @@
 # cogs/members.py
+import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -18,13 +19,68 @@ from core.permissions import ensure_admin
 from core.ui import rof_embed
 
 
+# ==============================================================================
+# HELPERS
+# ==============================================================================
+
+def _safe_tz_off() -> float:
+    try:
+        return float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
+    except Exception as e:
+        print(f"[MEMBERS] tz config read failed: {e}")
+        return float(DEFAULT_TZ_OFFSET)
+
+
+def _safe_config_int(key: str, default: int = 0) -> int:
+    """fix A: DB read + int cast in one guarded call."""
+    try:
+        return int(db.get_config(key, str(default)) or default)
+    except Exception as e:
+        print(f"[MEMBERS] config '{key}' read/cast failed: {e}")
+        return int(default)
+
+
+def _parse_iso_utc(raw_value) -> Optional[datetime]:
+    """fix J: normalize trailing `Z` and return None on malformed input."""
+    if not raw_value:
+        return None
+    s = str(raw_value).strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception as e:
+        print(f"[MEMBERS] invalid ISO datetime '{raw_value}': {e}")
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _safe_rules_text(fallback: str = "*No rules have been set yet.*") -> str:
+    """fix B/G: never let rules rendering crash a caller."""
+    try:
+        return db.get_formatted_rules()
+    except Exception as e:
+        print(f"[MEMBERS] get_formatted_rules failed: {e}")
+        return fallback
+
+
 def load_rules() -> str:
-    return db.get_formatted_rules()
+    # fix I: safe accessor for legacy callers.
+    return _safe_rules_text()
 
 
 def save_rules(text: str, actor_id: int = 0):
+    # fix I: intentionally propagates — caller must handle.
     db.replace_all_rules(text, actor_id=actor_id)
 
+
+# ==============================================================================
+# MODAL
+# ==============================================================================
 
 class RulesModal(discord.ui.Modal, title="Set ROF Alliance Rules"):
     rules_input = discord.ui.TextInput(
@@ -38,22 +94,64 @@ class RulesModal(discord.ui.Modal, title="Set ROF Alliance Rules"):
 
     def __init__(self):
         super().__init__()
-        self.rules_input.default = db.get_formatted_rules()
+        # fix D: guarded prefill.
+        try:
+            self.rules_input.default = db.get_formatted_rules()
+        except Exception as e:
+            print(f"[MEMBERS] RulesModal prefill failed: {e}")
+            self.rules_input.default = ""
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not await ensure_admin(interaction):
-            return
-        save_rules(self.rules_input.value, actor_id=interaction.user.id)
-        db.log_audit(interaction.user.id, "rules_replace", "Replaced full alliance rules list via modal")
-        await interaction.response.send_message(
-            "✅ **Rules updated!** All new members will receive the updated rules in their welcome DM.",
-            ephemeral=True,
-        )
+        # fix E: guard the whole flow so the user always gets a response.
+        try:
+            if not await ensure_admin(interaction):
+                return
 
+            try:
+                save_rules(self.rules_input.value, actor_id=interaction.user.id)
+            except Exception as e:
+                print(f"[MEMBERS] save_rules failed: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                return await interaction.response.send_message(
+                    "⚠️ Could not save the rules right now. Please try again.",
+                    ephemeral=True,
+                )
+
+            # fix F: audit log is fire-and-forget.
+            try:
+                db.log_audit(
+                    interaction.user.id,
+                    "rules_replace",
+                    "Replaced full alliance rules list via modal",
+                )
+            except Exception as e:
+                print(f"[MEMBERS] log_audit failed (rules modal): {e}")
+
+            await interaction.response.send_message(
+                "✅ **Rules updated!** All new members will receive the updated rules in their welcome DM.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            print(f"[MEMBERS] RulesModal.on_submit crashed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Could not update the rules right now.", ephemeral=True
+                    )
+            except Exception:
+                pass
+
+
+# ==============================================================================
+# COG
+# ==============================================================================
 
 class Members(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    # ---------- welcome rendering ----------
 
     def build_welcome_channel_embed(self, member: discord.Member) -> discord.Embed:
         return rof_embed(
@@ -65,29 +163,53 @@ class Members(commands.Cog):
                 f"Have fun and enjoy the chaos! 🔥"
             ),
             color=ROFColors.GOLD,
-            thumbnail_url=member.display_avatar.url if hasattr(member, "display_avatar") else None,
+            thumbnail_url=(
+                member.display_avatar.url if hasattr(member, "display_avatar") else None
+            ),
             footer_extra=f"Member: {member.display_name}",
         )
 
     def build_welcome_dm_embeds(self, member: discord.Member) -> list:
-        """Build clean, readable onboarding embeds covering all 7 Part 7.2 sections."""
-        tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
-        upcoming = db.get_upcoming_events()[:3]
+        """Build clean, readable onboarding embeds (Part 7.2 sections)."""
+        # fix B: every external call is guarded with a sensible fallback.
+        tz_off = _safe_tz_off()
+
+        try:
+            upcoming = db.get_upcoming_events()[:3] or []
+        except Exception as e:
+            print(f"[MEMBERS] get_upcoming_events failed (welcome DM): {e}")
+            upcoming = []
+
         if upcoming:
             ev_lines = []
             for ev in upcoming:
-                dt = datetime.fromisoformat(ev["start_time_utc"])
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                dual = format_dual_timestamps(dt, tz_off)
-                ev_lines.append(
-                    f"⚔️ **{ev['name']}** — `{dual['game_time']}` | `{dual['india_time']}` ({dual['discord_relative']})"
-                )
-            events_summary = "\n".join(ev_lines)
+                try:
+                    dt = _parse_iso_utc(ev.get("start_time_utc"))
+                    if dt is None:
+                        continue
+                    try:
+                        dual = format_dual_timestamps(dt, tz_off)
+                    except Exception as e:
+                        print(f"[MEMBERS] format_dual_timestamps failed: {e}")
+                        continue
+                    ev_lines.append(
+                        f"⚔️ **{ev.get('name', '?')}** — `{dual['game_time']}` | "
+                        f"`{dual['india_time']}` ({dual['discord_relative']})"
+                    )
+                except Exception as e:
+                    print(f"[MEMBERS] welcome event line render failed: {e}")
+                    continue
+            events_summary = (
+                "\n".join(ev_lines)
+                or "No upcoming events scheduled right now. Use `/events` anytime to check!"
+            )
         else:
-            events_summary = "No upcoming events scheduled right now. Use `/events` anytime to check!"
+            events_summary = (
+                "No upcoming events scheduled right now. Use `/events` anytime to check!"
+            )
 
-        # Embed 1: Welcome Intro, Alliance Rules & Alliance Info
+        rules_text = _safe_rules_text()
+
         embed_rules = rof_embed(
             title=f"🛡️ WELCOME TO ROF, {member.display_name.upper()}!",
             description=(
@@ -95,11 +217,13 @@ class Members(commands.Cog):
                 "We operate as a coordinated team across combat events, rallies, and our server gaming arena."
             ),
             color=ROFColors.GOLD,
-            thumbnail_url=member.display_avatar.url if hasattr(member, "display_avatar") else None,
+            thumbnail_url=(
+                member.display_avatar.url if hasattr(member, "display_avatar") else None
+            ),
         )
         embed_rules.add_field(
             name="📜 Alliance Rules",
-            value=db.get_formatted_rules(),
+            value=rules_text,
             inline=False,
         )
         embed_rules.add_field(
@@ -112,7 +236,6 @@ class Members(commands.Cog):
             inline=False,
         )
 
-        # Embed 2: Quick Guide to Events, Games, AI Assistant & Useful Commands
         embed_guide = rof_embed(
             title="🎮 ROF BOT QUICK-START GUIDE",
             description="Here is how to get the most out of the ROF Discord Bot:",
@@ -120,20 +243,27 @@ class Members(commands.Cog):
         )
         embed_guide.add_field(
             name="📅 How to View Events",
-            value="Use `/events` in the server or type `events` here in DMs to see upcoming schedules in Game Time and India Time.",
+            value=(
+                "Use `/events` in the server or type `events` here in DMs to see upcoming schedules "
+                "in Game Time and India Time."
+            ),
             inline=False,
         )
         embed_guide.add_field(
             name="🕹️ How to Play Games",
             value=(
-                "Use `/games` to open the **ROF Gaming Arena**! Play solo games (Wordle, Quick Math, Trivia, Memory Challenge, Reaction Speed Test) "
+                "Use `/games` to open the **ROF Gaming Arena**! Play solo games "
+                "(Wordle, Quick Math, Trivia, Memory Challenge, Reaction Speed Test) "
                 "or join multiplayer rooms (Four-Digit Codebreaker, Reaction Race, Trivia Battle, RPS)."
             ),
             inline=False,
         )
         embed_guide.add_field(
             name="🤖 How to Use the Alliance Assistant",
-            value="Simply reply to this DM with any question (e.g., *\"When is the next Surge?\"* or *\"How do I play Codebreaker?\"*) and I will answer immediately!",
+            value=(
+                "Simply reply to this DM with any question (e.g., *\"When is the next Surge?\"* "
+                "or *\"How do I play Codebreaker?\"*) and I will answer immediately!"
+            ),
             inline=False,
         )
         embed_guide.add_field(
@@ -143,15 +273,32 @@ class Members(commands.Cog):
         )
         return [embed_rules, embed_guide]
 
+    # ---------- listeners ----------
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         if GUILD_ID and member.guild.id != GUILD_ID:
             return
 
-        # 1. Send Public Welcome Channel Message (Part 7.1)
-        welcome_chan_id = int(db.get_config("welcome_channel_id", str(WELCOME_CHANNEL_ID or 0)) or 0)
-        welcome_channel = self.bot.get_channel(welcome_chan_id) if welcome_chan_id else member.guild.system_channel
+        # fix A: fully guarded config + channel resolution.
+        welcome_chan_id = _safe_config_int(
+            "welcome_channel_id", WELCOME_CHANNEL_ID or 0
+        )
 
+        welcome_channel = None
+        if welcome_chan_id:
+            try:
+                welcome_channel = self.bot.get_channel(welcome_chan_id)
+            except Exception as e:
+                print(f"[MEMBERS] get_channel({welcome_chan_id}) failed: {e}")
+                welcome_channel = None
+        if welcome_channel is None:
+            welcome_channel = getattr(member.guild, "system_channel", None)
+
+        # fix K: fallback for DM-failure notification.
+        notify_channel = welcome_channel or getattr(member.guild, "system_channel", None)
+
+        # 1. Public welcome message
         if welcome_channel:
             try:
                 await welcome_channel.send(
@@ -159,46 +306,80 @@ class Members(commands.Cog):
                     embed=self.build_welcome_channel_embed(member),
                 )
             except Exception as e:
-                print(f"[WELCOME] Could not send public welcome message: {e}")
+                print(f"[MEMBERS] Could not send public welcome message: {e}")
 
-        # 2. Send Automatic Onboarding DM (Part 7.2) & Safe DM Failure Handling (Part 7.3)
-        dm_embeds = self.build_welcome_dm_embeds(member)
+        # 2. Build DM embeds — separate build failure from send failure (fix C).
         try:
-            for emb in dm_embeds:
-                await member.send(embed=emb)
-        except discord.Forbidden:
-            # Part 7.3: Do not retry; log safely; notify in welcome channel to check rules
-            print(f"[WELCOME] Member {member.id} ({member.name}) has DMs disabled. Logged safely.")
-            if welcome_channel:
-                rules_chan_id = int(db.get_config("rules_channel_id", str(RULES_CHANNEL_ID or 0)) or 0)
+            dm_embeds = self.build_welcome_dm_embeds(member)
+        except Exception as e:
+            print(f"[MEMBERS] Failed to build onboarding DM for {member.id}: {e}")
+            traceback.print_exc()
+            dm_embeds = []
+
+        if dm_embeds:
+            sent_any = False
+            hit_forbidden = False
+            try:
+                for emb in dm_embeds:
+                    await member.send(embed=emb)
+                    sent_any = True
+            except discord.Forbidden:
+                hit_forbidden = True
+                print(
+                    f"[MEMBERS] Member {member.id} ({member.name}) has DMs disabled. "
+                    f"(sent_any={sent_any})"
+                )
+            except Exception as e:
+                print(
+                    f"[MEMBERS] Unexpected error sending DM to {member.id}: "
+                    f"{type(e).__name__}: {e}"
+                )
+
+            # 3. Notify in channel only if we got Forbidden (DMs closed).
+            # If partial delivery happened (sent_any=True) we still notify once,
+            # because the member didn't receive the full guide.
+            if hit_forbidden and notify_channel:
+                rules_chan_id = _safe_config_int(
+                    "rules_channel_id", RULES_CHANNEL_ID or 0
+                )
                 rules_ref = f"<#{rules_chan_id}>" if rules_chan_id else "`/rules`"
                 try:
-                    await welcome_channel.send(
-                        f"ℹ️ {member.mention}, your Direct Messages are closed so I couldn't DM your starter guide. "
-                        f"Please check {rules_ref} and type `/help` to get started!"
+                    await notify_channel.send(
+                        f"ℹ️ {member.mention}, your Direct Messages are closed so I couldn't "
+                        f"DM your starter guide. Please check {rules_ref} and type `/help` "
+                        f"to get started!"
                     )
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"[WELCOME] Unexpected error sending DM to {member.id}: {e}")
+                except Exception as e:
+                    print(f"[MEMBERS] welcome-channel fallback failed: {e}")
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         if GUILD_ID and member.guild.id != GUILD_ID:
             return
-        # Only wipe stats if explicitly enabled by admin in server_config
-        if db.get_config("wipe_stats_on_leave", "false").lower() == "true":
-            db.wipe_player_stats(member.id)
+        # fix H: guarded config + guarded wipe.
+        try:
+            wipe_flag = (db.get_config("wipe_stats_on_leave", "false") or "false").lower()
+        except Exception as e:
+            print(f"[MEMBERS] get_config(wipe_stats_on_leave) failed: {e}")
+            wipe_flag = "false"
 
-    # ---------- /rules COMMAND GROUP (Part 7.4: view, add, edit, remove) ----------
+        if wipe_flag == "true":
+            try:
+                db.wipe_player_stats(member.id)
+            except Exception as e:
+                print(f"[MEMBERS] wipe_player_stats failed ({member.id}): {e}")
 
-    rules_group = app_commands.Group(name="rules", description="View and manage official ROF Alliance rules")
+    # ---------- /rules COMMAND GROUP ----------
+
+    rules_group = app_commands.Group(
+        name="rules", description="View and manage official ROF Alliance rules"
+    )
 
     @rules_group.command(name="view", description="View the official ROF Alliance rules")
     async def rules_view_cmd(self, interaction: discord.Interaction):
         embed = rof_embed(
             title="📜 ROF ALLIANCE RULES",
-            description=db.get_formatted_rules(),
+            description=_safe_rules_text(),
             color=ROFColors.ARENA,
         )
         await interaction.response.send_message(embed=embed)
@@ -208,16 +389,36 @@ class Members(commands.Cog):
     async def rules_add_cmd(self, interaction: discord.Interaction, rule_text: str):
         if not await ensure_admin(interaction):
             return
-        num = db.add_rule(rule_text, actor_id=interaction.user.id)
-        db.log_audit(interaction.user.id, "rule_add", f"Added Rule #{num}: {rule_text}")
+        # fix G: guarded DB write.
+        try:
+            num = db.add_rule(rule_text, actor_id=interaction.user.id)
+        except Exception as e:
+            print(f"[MEMBERS] add_rule failed: {type(e).__name__}: {e}")
+            return await interaction.response.send_message(
+                "⚠️ Could not add the rule right now.", ephemeral=True
+            )
+        # fix F: fire-and-forget audit.
+        try:
+            db.log_audit(
+                interaction.user.id, "rule_add", f"Added Rule #{num}: {rule_text}"
+            )
+        except Exception as e:
+            print(f"[MEMBERS] log_audit failed (rule add): {e}")
+
         embed = rof_embed(
             title="✅ RULE ADDED",
-            description=f"Added **Rule #{num}:** {rule_text}\n\n**Updated Rules:**\n{db.get_formatted_rules()}",
+            description=(
+                f"Added **Rule #{num}:** {rule_text}\n\n"
+                f"**Updated Rules:**\n{_safe_rules_text()}"
+            ),
             color=ROFColors.SUCCESS,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @rules_group.command(name="edit", description="Edit an existing rule by number or open full editor (Admin/Owner only)")
+    @rules_group.command(
+        name="edit",
+        description="Edit an existing rule by number or open full editor (Admin/Owner only)",
+    )
     @app_commands.describe(
         rule_number="Optional rule number to edit (leave blank to open the full rules editor modal)",
         new_text="New text for the specified rule number",
@@ -231,18 +432,40 @@ class Members(commands.Cog):
         if not await ensure_admin(interaction):
             return
         if rule_number is None or not new_text:
-            return await interaction.response.send_modal(RulesModal())
+            try:
+                await interaction.response.send_modal(RulesModal())
+            except Exception as e:
+                print(f"[MEMBERS] send_modal failed (rules edit): {e}")
+            return
 
-        ok = db.edit_rule(rule_number, new_text, actor_id=interaction.user.id)
+        # fix G: guarded DB write.
+        try:
+            ok = db.edit_rule(rule_number, new_text, actor_id=interaction.user.id)
+        except Exception as e:
+            print(f"[MEMBERS] edit_rule failed: {type(e).__name__}: {e}")
+            return await interaction.response.send_message(
+                "⚠️ Could not edit the rule right now.", ephemeral=True
+            )
         if not ok:
             return await interaction.response.send_message(
                 f"❌ Rule `#{rule_number}` does not exist. Use `/rules view` to check rule numbers.",
                 ephemeral=True,
             )
-        db.log_audit(interaction.user.id, "rule_edit", f"Edited Rule #{rule_number}: {new_text}")
+        try:
+            db.log_audit(
+                interaction.user.id,
+                "rule_edit",
+                f"Edited Rule #{rule_number}: {new_text}",
+            )
+        except Exception as e:
+            print(f"[MEMBERS] log_audit failed (rule edit): {e}")
+
         embed = rof_embed(
             title="✅ RULE UPDATED",
-            description=f"Updated **Rule #{rule_number}**.\n\n**Current Rules:**\n{db.get_formatted_rules()}",
+            description=(
+                f"Updated **Rule #{rule_number}**.\n\n"
+                f"**Current Rules:**\n{_safe_rules_text()}"
+            ),
             color=ROFColors.SUCCESS,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -252,27 +475,51 @@ class Members(commands.Cog):
     async def rules_remove_cmd(self, interaction: discord.Interaction, rule_number: int):
         if not await ensure_admin(interaction):
             return
-        ok = db.remove_rule(rule_number)
+        # fix G: guarded DB write.
+        try:
+            ok = db.remove_rule(rule_number)
+        except Exception as e:
+            print(f"[MEMBERS] remove_rule failed: {type(e).__name__}: {e}")
+            return await interaction.response.send_message(
+                "⚠️ Could not remove the rule right now.", ephemeral=True
+            )
         if not ok:
             return await interaction.response.send_message(
                 f"❌ Rule `#{rule_number}` was not found.", ephemeral=True
             )
-        db.log_audit(interaction.user.id, "rule_remove", f"Removed Rule #{rule_number}")
+        try:
+            db.log_audit(
+                interaction.user.id, "rule_remove", f"Removed Rule #{rule_number}"
+            )
+        except Exception as e:
+            print(f"[MEMBERS] log_audit failed (rule remove): {e}")
+
         embed = rof_embed(
             title="🗑️ RULE REMOVED",
-            description=f"Removed Rule `#{rule_number}` and re-numbered remaining rules.\n\n{db.get_formatted_rules()}",
+            description=(
+                f"Removed Rule `#{rule_number}` and re-numbered remaining rules.\n\n"
+                f"{_safe_rules_text()}"
+            ),
             color=ROFColors.WARNING,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# Preserved legacy /rof group (/rof rules, /rof setrules)
+# ==============================================================================
+# LEGACY /rof GROUP
+# ==============================================================================
+
 rof_group = app_commands.Group(name="rof", description="ROF Alliance Commands")
 
 
 @rof_group.command(name="rules", description="View the ROF Alliance rules")
 async def view_rules_legacy(interaction: discord.Interaction):
-    embed = rof_embed(title="📜 ROF ALLIANCE RULES", description=load_rules(), color=ROFColors.ARENA)
+    # fix I: load_rules() already returns a fallback instead of raising.
+    embed = rof_embed(
+        title="📜 ROF ALLIANCE RULES",
+        description=load_rules(),
+        color=ROFColors.ARENA,
+    )
     await interaction.response.send_message(embed=embed)
 
 
@@ -280,7 +527,10 @@ async def view_rules_legacy(interaction: discord.Interaction):
 async def set_rules_legacy(interaction: discord.Interaction):
     if not await ensure_admin(interaction):
         return
-    await interaction.response.send_modal(RulesModal())
+    try:
+        await interaction.response.send_modal(RulesModal())
+    except Exception as e:
+        print(f"[MEMBERS] send_modal failed (legacy setrules): {e}")
 
 
 async def setup(bot: commands.Bot):

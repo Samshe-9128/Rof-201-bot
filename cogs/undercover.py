@@ -1,5 +1,6 @@
 # cogs/undercover.py
 import random
+import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -21,55 +22,178 @@ WORDS = [
 ]
 
 
+# ---------- vote view ----------
+
 class UndercoverVote(discord.ui.View):
     def __init__(self, cog, players, spy, word_pair):
         super().__init__(timeout=180)
         self.cog = cog
-        self.players = players
+        self.players = list(players)              # fix E
+        self.player_ids = {p.id for p in self.players}
         self.spy = spy
         self.word_pair = word_pair
         self.votes = {}
+        self.tallied = False
+        self.message = None
 
-        options = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in players]
+        options = [
+            discord.SelectOption(label=p.display_name, value=str(p.id))
+            for p in self.players
+        ]
         self.select = discord.ui.Select(placeholder="Who is the Spy?", options=options)
         self.select.callback = self.vote_callback
         self.add_item(self.select)
 
     async def vote_callback(self, interaction: discord.Interaction):
-        if interaction.user.id not in [p.id for p in self.players]:
-            return await interaction.response.send_message("You are not playing in this match!", ephemeral=True)
+        # Already tallied — stop processing.
+        if self.tallied:
+            return await interaction.response.send_message(
+                "Voting has already ended.", ephemeral=True
+            )
+        if interaction.user.id not in self.player_ids:
+            return await interaction.response.send_message(
+                "You are not playing in this match!", ephemeral=True
+            )
 
-        self.votes[interaction.user.id] = int(self.select.values[0])
-        await interaction.response.send_message("✅ Vote locked in!", ephemeral=True)
+        # fix F: validate target
+        try:
+            target_id = int(self.select.values[0])
+        except (ValueError, IndexError):
+            return await interaction.response.send_message(
+                "Invalid vote target.", ephemeral=True
+            )
+        if target_id not in self.player_ids:
+            return await interaction.response.send_message(
+                "Invalid vote target.", ephemeral=True
+            )
 
-        if len(self.votes) == len(self.players):
+        self.votes[interaction.user.id] = target_id
+
+        remaining = len(self.players) - len(self.votes)
+        suffix = (
+            f" ({remaining} vote{'s' if remaining != 1 else ''} remaining)"
+            if remaining else ""
+        )
+        try:
+            await interaction.response.send_message(
+                f"✅ Vote locked in!{suffix}", ephemeral=True
+            )
+        except Exception as e:
+            print(f"[UNDERCOVER] vote ack failed: {e}")
+
+        # fix A: double-guard on `not self.tallied` so simultaneous
+        # last-two-voter callbacks can't both trigger a tally.
+        if len(self.votes) == len(self.players) and not self.tallied:
+            self.tallied = True
             self.stop()
-            await self.cog.tally_votes(interaction.channel, self.players, self.votes, self.spy, self.word_pair)
 
+            # Cleanup the original vote message (if we can).
+            if self.message:
+                try:
+                    await self.message.edit(
+                        content="🗳️ *Voting closed — tallying results...*",
+                        view=None,
+                    )
+                except Exception as e:
+                    print(f"[UNDERCOVER] vote-message cleanup failed: {e}")
+
+            # fix B: don't let a tally failure leave the game dead-silent.
+            try:
+                await self.cog.tally_votes(
+                    interaction.channel,
+                    self.players,
+                    self.votes,
+                    self.spy,
+                    self.word_pair,
+                )
+            except Exception as e:
+                print(f"[UNDERCOVER] tally failed: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                try:
+                    await interaction.channel.send(
+                        "⚠️ Something went wrong while tallying votes. "
+                        "Please start a new game with `/undercover`."
+                    )
+                except Exception:
+                    pass
+
+    async def on_timeout(self):
+        if self.tallied:
+            return
+        self.tallied = True
+        if self.message:
+            try:
+                embed = rof_embed(
+                    title="⏰ Voting Timed Out",
+                    description=(
+                        "Not everyone cast their vote in time. "
+                        "The round has been cancelled — start a new game with `/undercover`."
+                    ),
+                    color=ROFColors.ERROR,
+                )
+                await self.message.edit(content="", embed=embed, view=None)
+            except Exception as e:
+                print(f"[UNDERCOVER] timeout cleanup failed: {e}")
+
+
+# ---------- start-vote view ----------
 
 class StartVoteView(discord.ui.View):
-    def __init__(self, cog, players, spy, word_pair):
+    def __init__(self, cog, players, spy, word_pair, channel=None):
         super().__init__(timeout=300)
         self.cog = cog
-        self.players = players
+        self.players = list(players)              # fix E
+        self.player_ids = {p.id for p in self.players}
         self.spy = spy
         self.word_pair = word_pair
+        self.channel = channel
+        self.message = None
 
     @discord.ui.button(label="Start Voting", style=discord.ButtonStyle.danger, emoji="🗳️")
     async def vote_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in [p.id for p in self.players]:
-            return await interaction.response.send_message("You are not playing!", ephemeral=True)
+        if interaction.user.id not in self.player_ids:
+            return await interaction.response.send_message(
+                "You are not playing!", ephemeral=True
+            )
 
         self.stop()
-        embed = rof_embed(
-            title="🗳️ ROF Undercover — Voting Started",
-            description="Select who you suspect is the Spy from the dropdown menu below!",
-            color=ROFColors.ACCENT,
-        )
-        await interaction.response.edit_message(embed=embed, view=None)
-        vote_view = UndercoverVote(self.cog, self.players, self.spy, self.word_pair)
-        await interaction.channel.send("Cast your votes below:", view=vote_view)
 
+        try:
+            embed = rof_embed(
+                title="🗳️ ROF Undercover — Voting Started",
+                description="Select who you suspect is the Spy from the dropdown menu below!",
+                color=ROFColors.ACCENT,
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+        except Exception as e:
+            print(f"[UNDERCOVER] edit_message failed: {e}")
+            try:
+                await interaction.response.send_message("Voting has started!", ephemeral=True)
+            except Exception:
+                pass
+
+        vote_view = UndercoverVote(self.cog, self.players, self.spy, self.word_pair)
+        try:
+            vote_view.message = await interaction.channel.send(
+                "Cast your votes below:", view=vote_view
+            )
+        except Exception as e:
+            print(f"[UNDERCOVER] failed to send vote message: {e}")
+
+    async def on_timeout(self):
+        # fix D: nudge the channel if nobody clicked "Start Voting".
+        if not self.channel:
+            return
+        try:
+            await self.channel.send(
+                "⏰ The voting button expired after 5 minutes. "
+                "Start a new game with `/undercover`."
+            )
+        except Exception:
+            pass
+
+
+# ---------- cog ----------
 
 class Undercover(commands.Cog):
     def __init__(self, bot):
@@ -99,7 +223,10 @@ class Undercover(commands.Cog):
         lobby = RoomLobbyView(
             room=room,
             on_start_callback=_on_start,
-            extra_description="🕵️ **Players:** 3–6 players\n💬 Everyone gets a secret word via DM, except the Spy who gets a slightly different word!",
+            extra_description=(
+                "🕵️ **Players:** 3–6 players\n"
+                "💬 Everyone gets a secret word via DM, except the Spy who gets a slightly different word!"
+            ),
         )
         await interaction.response.send_message(embed=lobby.build_embed(), view=lobby)
         try:
@@ -112,6 +239,12 @@ class Undercover(commands.Cog):
         await self.open_undercover_room(interaction)
 
     async def start_game(self, channel, players):
+        players = list(players)                   # fix E
+        if len(players) < 3:
+            return await channel.send(
+                "⚠️ Undercover needs at least **3 players** to start."
+            )
+
         pair = random.choice(WORDS)
         civilian_word, spy_word = pair
         spy = random.choice(players)
@@ -127,12 +260,19 @@ class Undercover(commands.Cog):
                     f"Your role: **{role}**\n\n"
                     f"*Describe your word in the server channel without saying the word itself!*"
                 )
-            except Exception:
+            except discord.Forbidden:             # fix I
+                failed_dms.append(p.mention)
+            except Exception as e:
+                print(f"[UNDERCOVER] DM to {p.id} failed: {type(e).__name__}: {e}")
                 failed_dms.append(p.mention)
 
         if failed_dms:
+            # fix H: acknowledge that some DMs may already have been delivered.
             return await channel.send(
-                f"⚠️ Could not DM {', '.join(failed_dms)}. Please enable DMs from server members and try again."
+                f"⚠️ Could not DM {', '.join(failed_dms)}.\n"
+                f"**Fix:** Enable *DMs from server members* in your Privacy Settings, "
+                f"then start a new game with `/undercover`.\n"
+                f"*Any DMs already delivered can be ignored — this round is cancelled.*"
             )
 
         embed = rof_embed(
@@ -145,41 +285,74 @@ class Undercover(commands.Cog):
             ),
             color=ROFColors.WARNING,
         )
-        view = StartVoteView(self, players, spy, pair)
-        await channel.send(embed=embed, view=view)
+        view = StartVoteView(self, players, spy, pair, channel=channel)
+        try:
+            view.message = await channel.send(embed=embed, view=view)
+        except Exception as e:
+            print(f"[UNDERCOVER] failed to send start embed: {e}")
 
     async def tally_votes(self, channel, players, votes, spy, word_pair):
+        players = list(players)                   # fix E
+
+        def _player_name(pid):
+            m = discord.utils.get(players, id=pid)
+            return m.display_name if m else f"User {pid}"
+
         counts = {}
         for target_id in votes.values():
             counts[target_id] = counts.get(target_id, 0) + 1
 
+        if not counts:
+            return await channel.send("⚠️ No votes were cast — round cancelled.")
+
         max_votes = max(counts.values())
-        eliminated = [pid for pid, c in counts.items() if c == max_votes]
-        eliminated_player = discord.utils.get(players, id=random.choice(eliminated))
+        eliminated_ids = [pid for pid, c in counts.items() if c == max_votes]
+        was_tie = len(eliminated_ids) > 1
+
+        chosen_id = random.choice(eliminated_ids)
+        eliminated_player = discord.utils.get(players, id=chosen_id)
         civilian_word, spy_word = word_pair
         arcade = self.bot.get_cog("ArcadeCore")
 
-        if eliminated_player and eliminated_player.id == spy.id:
+        # fix G: transparent vote breakdown.
+        vote_breakdown = "\n".join(
+            f"**{_player_name(pid)}**: {cnt} vote{'s' if cnt != 1 else ''}"
+            for pid, cnt in sorted(counts.items(), key=lambda x: -x[1])
+        )
+
+        tie_note = ""
+        if was_tie:
+            names = ", ".join(_player_name(pid) for pid in eliminated_ids)
+            tie_note = f"\n\n⚠️ **Tie** between {names} — random elimination!"
+
+        spy_caught = bool(eliminated_player and eliminated_player.id == spy.id)
+
+        if spy_caught:
             embed = rof_embed(
                 title="🔍 ROF Undercover — Voting Results",
                 description=(
                     f"🎯 **Civilians Win!** {eliminated_player.mention} was caught as the Spy!\n"
                     f"**Words:** Civilian = `{civilian_word}` | Spy = `{spy_word}`"
+                    f"{tie_note}"
                 ),
                 color=ROFColors.SUCCESS,
             )
+            embed.add_field(name="Vote Breakdown", value=vote_breakdown, inline=False)
             for p in players:
                 won = p.id != spy.id
-                db.record_game_result(
-                    user_id=p.id,
-                    game_name="Undercover",
-                    result="win" if won else "loss",
-                    score=30 if won else 0,
-                    points_earned=30 if won else 5,
-                    attempts=1,
-                    mode="multi",
-                    username=p.display_name,
-                )
+                try:
+                    db.record_game_result(
+                        user_id=p.id,
+                        game_name="Undercover",
+                        result="win" if won else "loss",
+                        score=30 if won else 0,
+                        points_earned=30 if won else 5,
+                        attempts=1,
+                        mode="multi",
+                        username=p.display_name,
+                    )
+                except Exception as e:
+                    print(f"[UNDERCOVER] db record failed for {p.id}: {e}")
         else:
             elim_name = eliminated_player.mention if eliminated_player else "Nobody"
             embed = rof_embed(
@@ -188,24 +361,34 @@ class Undercover(commands.Cog):
                     f"❌ **Spy Wins!** {elim_name} was innocent.\n"
                     f"The Spy was actually **{spy.mention}**!\n"
                     f"**Words:** Civilian = `{civilian_word}` | Spy = `{spy_word}`"
+                    f"{tie_note}"
                 ),
                 color=ROFColors.ERROR,
             )
+            embed.add_field(name="Vote Breakdown", value=vote_breakdown, inline=False)
             for p in players:
                 won = p.id == spy.id
-                db.record_game_result(
-                    user_id=p.id,
-                    game_name="Undercover",
-                    result="win" if won else "loss",
-                    score=50 if won else 0,
-                    points_earned=50 if won else 5,
-                    attempts=1,
-                    mode="multi",
-                    username=p.display_name,
-                )
+                try:
+                    db.record_game_result(
+                        user_id=p.id,
+                        game_name="Undercover",
+                        result="win" if won else "loss",
+                        score=50 if won else 0,
+                        points_earned=50 if won else 5,
+                        attempts=1,
+                        mode="multi",
+                        username=p.display_name,
+                    )
+                except Exception as e:
+                    print(f"[UNDERCOVER] db record failed for {p.id}: {e}")
 
+        # fix C: don't let arcade hiccup kill the result message.
         if arcade:
-            arcade.reload_cache()
+            try:
+                arcade.reload_cache()
+            except Exception as e:
+                print(f"[UNDERCOVER] arcade reload_cache failed: {e}")
+
         await channel.send(embed=embed)
 
 
