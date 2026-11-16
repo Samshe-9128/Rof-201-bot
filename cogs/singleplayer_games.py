@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from core.config import ROFColors
 from core.database import db
 from core.permissions import ensure_session_player
-from core.ui import GameResultView, GameStartView, rof_embed
+from core.ui import safe_reply_error, GameResultView, GameStartView, rof_embed
 
 
 # ==============================================================================
@@ -238,6 +238,7 @@ class WordScrambleSessionView(discord.ui.View):
             await interaction.response.send_modal(ScrambleAnswerModal(self))
         except Exception as e:
             print(f"[SINGLE] scramble send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     @discord.ui.button(label="Hint", style=discord.ButtonStyle.secondary, emoji="💡")
     async def hint_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -361,12 +362,6 @@ class WordScrambleSessionView(discord.ui.View):
             print(f"[SINGLE] scramble DB record failed: {type(e).__name__}: {e}")
 
         # fix F: arcade best-effort.
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[SINGLE] scramble arcade reload failed: {e}")
 
         await self._send_result_embed(interaction, won, timed_out, pts)
 
@@ -490,6 +485,7 @@ class QuickMathSessionView(discord.ui.View):
             await interaction.response.send_modal(QuickMathModal(self))
         except Exception as e:
             print(f"[SINGLE] quickmath send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     @discord.ui.button(label="End Early", style=discord.ButtonStyle.secondary, emoji="⏹️")
     async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -604,12 +600,6 @@ class QuickMathSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] quickmath DB record failed: {type(e).__name__}: {e}")
 
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[SINGLE] quickmath arcade reload failed: {e}")
 
         embed = rof_embed(
             title="🧮 ROF QUICK MATH — TIME UP!",
@@ -791,12 +781,6 @@ class TriviaSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] trivia DB record failed: {type(e).__name__}: {e}")
 
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[SINGLE] trivia arcade reload failed: {e}")
 
         embed = rof_embed(
             title="❓ ROF TRIVIA — COMPLETE",
@@ -951,12 +935,6 @@ class SingleRPSView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] rps DB record failed: {type(e).__name__}: {e}")
 
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[SINGLE] rps arcade reload failed: {e}")
 
         embed = rof_embed(
             title="✂️ ROF ROCK PAPER SCISSORS — MATCH OVER",
@@ -1056,6 +1034,7 @@ class NumberGuessSessionView(discord.ui.View):
             await interaction.response.send_modal(NumberGuessModal(self))
         except Exception as e:
             print(f"[SINGLE] numberguess send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     async def on_timeout(self):
         if self._ended:
@@ -1132,12 +1111,6 @@ class NumberGuessSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] numberguess DB record failed: {type(e).__name__}: {e}")
 
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[SINGLE] numberguess arcade reload failed: {e}")
 
         embed = rof_embed(
             title="🔢 ROF NUMBER GUESSING — RESULT",
@@ -1246,6 +1219,7 @@ class EmojiGuessSessionView(discord.ui.View):
             await interaction.response.send_modal(EmojiGuessModal(self))
         except Exception as e:
             print(f"[SINGLE] emojiguess send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     @discord.ui.button(label="Hint", style=discord.ButtonStyle.secondary, emoji="💡")
     async def hint_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1325,12 +1299,6 @@ class EmojiGuessSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] emojiguess DB record failed: {type(e).__name__}: {e}")
 
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[SINGLE] emojiguess arcade reload failed: {e}")
 
         embed = rof_embed(
             title="🎭 ROF EMOJI GUESSING — RESULT",

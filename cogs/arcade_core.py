@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.config import RANKS, ROFColors, get_rank
-from core.database import ARCADE_FILE, db
+from core.database import db
 from core.permissions import ensure_session_player
 from core.ui import rof_embed
 
@@ -49,13 +49,15 @@ class LeaderboardFilterView(discord.ui.View):
             discord.SelectOption(label="Wordle", value="game:Wordle"),
             discord.SelectOption(label="Word Scramble", value="game:Word Scramble"),
             discord.SelectOption(label="Memory Challenge", value="game:Memory Challenge"),
-            discord.SelectOption(label="Memory Match (Pairs)", value="game:Memory Match"),
+            discord.SelectOption(label="Higher or Lower", value="game:Higher or Lower"),
+            discord.SelectOption(label="Treasure Hunt", value="game:Treasure Hunt"),
             discord.SelectOption(label="Quick Math", value="game:Quick Math"),
             discord.SelectOption(label="Trivia", value="game:Trivia"),
             discord.SelectOption(label="Rock Paper Scissors", value="game:Rock Paper Scissors"),
             discord.SelectOption(label="Number Guessing", value="game:Number Guessing"),
             discord.SelectOption(label="Emoji Guessing", value="game:Emoji Guessing"),
-            discord.SelectOption(label="Undercover", value="game:Undercover"),
+            discord.SelectOption(label="Tic-Tac-Toe", value="game:Tic-Tac-Toe"),
+            discord.SelectOption(label="Closest Wins", value="game:Closest Wins"),
             discord.SelectOption(label="Connect 4", value="game:Connect 4"),
         ]
         self.select = discord.ui.Select(
@@ -104,11 +106,11 @@ class LeaderboardFilterView(discord.ui.View):
 class ArcadeCore(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.data = load_arcade()
+        self.data = {}
 
     def reload_cache(self):
         try:
-            self.data = load_arcade()
+            self.data = {}
         except Exception as e:
             print(f"[ARCADE] reload_cache failed: {e}")
             self.data = {}
@@ -402,19 +404,7 @@ class ArcadeCore(commands.Cog):
     async def profile_cmd(
         self,
         interaction: discord.Interaction,
-        member: Optional[discord.Member] = None,
-    ):
-        target = member or interaction.user
-        await self.send_profile_embed(interaction, target, ephemeral=False)
-
-    @app_commands.command(
-        name="arcade_profile",
-        description="View your ROF Arcade profile and rank",
-    )
-    async def arcade_profile_cmd(
-        self,
-        interaction: discord.Interaction,
-        member: Optional[discord.Member] = None,
+        member: Optional[discord.User] = None,
     ):
         target = member or interaction.user
         await self.send_profile_embed(interaction, target, ephemeral=False)
@@ -436,13 +426,6 @@ class ArcadeCore(commands.Cog):
         scope: str = "overall",
     ):
         await self.send_leaderboard_interactive(interaction, scope=scope, ephemeral=False)
-
-    @app_commands.command(
-        name="arcade_leaderboard",
-        description="View the global ROF Arcade leaderboard",
-    )
-    async def arcade_leaderboard_cmd(self, interaction: discord.Interaction):
-        await self.send_leaderboard_interactive(interaction, scope="overall", ephemeral=False)
 
 
 async def setup(bot: commands.Bot):

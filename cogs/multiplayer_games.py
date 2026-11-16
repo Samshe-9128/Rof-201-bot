@@ -20,7 +20,7 @@ from cogs.singleplayer_games import (
 from core.config import ROFColors
 from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import rof_embed
+from core.ui import safe_reply_error, rof_embed
 
 
 # ==============================================================================
@@ -169,6 +169,7 @@ class MultiRoundRaceView(discord.ui.View):
             await interaction.response.send_modal(RaceAnswerModal(self))
         except Exception as e:
             print(f"[MULTI] send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     async def handle_submission(self, interaction: discord.Interaction, raw_value: str):
         norm = raw_value.strip() if self.mode == "math_battle" else _normalize_text(raw_value)
@@ -344,12 +345,6 @@ class MultiRoundRaceView(discord.ui.View):
                 print(f"[MULTI] db record failed ({p.id}): {e}")
 
         # fix G: reload once, best-effort.
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[MULTI] arcade reload failed: {e}")
 
         embed = self.build_embed(final_note)
         if winners:
@@ -605,12 +600,6 @@ class TriviaBattleView(discord.ui.View):
             except Exception as e:
                 print(f"[MULTI] trivia db record failed ({p.id}): {e}")
 
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[MULTI] arcade reload failed: {e}")
 
         embed = self.build_embed(final_summary)
         if is_tie:
@@ -811,12 +800,6 @@ class MultiplayerRPSView(discord.ui.View):
         except Exception as e:
             print(f"[MULTI] rps loser record failed: {e}")
 
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[MULTI] rps arcade reload failed: {e}")
 
         embed = self.build_embed()
         embed.add_field(

@@ -13,7 +13,7 @@ from core.config import (
 )
 from core.database import db
 from core.permissions import ensure_admin, is_admin_interaction
-from core.ui import PaginatedEmbedView, rof_embed
+from core.ui import safe_reply_error, PaginatedEmbedView, rof_embed
 
 
 # ==============================================================================
@@ -185,27 +185,22 @@ class EventCreateOrEditModal(discord.ui.Modal):
         min_length=10, max_length=10, required=True)
     event_time = discord.ui.TextInput(
         label="Game Time (HH:MM in UTC-2)", placeholder="e.g., 16:00",
-        min_length=5, max_length=5, required=True)
-    description = discord.ui.TextInput(
-        label="Event Description (Optional)", style=discord.TextStyle.paragraph,
-        placeholder="Rally instructions, requirements, or special notes...",
-        max_length=500, required=False)
-    duration_minutes = discord.ui.TextInput(
-        label="Duration in Minutes (Optional, default 60)",
-        placeholder="60", max_length=4, required=False)
+        min_length=4, max_length=5, required=True)
     reminder_minutes = discord.ui.TextInput(
-        label="Announcement / Reminder (minutes before start)",
+        label="Reminder (minutes before start)",
         placeholder="Leave blank for default (10). Use 0 for no reminder.",
         max_length=4, required=False)
 
     def __init__(self, cog: "Events", channel_id: Optional[int] = None,
-                 existing_event: Optional[dict] = None):
+                 existing_event: Optional[dict] = None,
+                 duration_minutes: int = 60):
         title = (f"Edit Event ({existing_event.get('id', '?')})"
                  if existing_event else "Create ROF Alliance Event")
         super().__init__(title=title)
         self.cog = cog
         self.channel_id = channel_id
         self.existing_event = existing_event
+        self.duration_val = max(1, min(1440, int(duration_minutes or 60)))
 
         if existing_event:
             try:
@@ -219,8 +214,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
                 self.event_name.default = existing_event.get("name", "")
                 self.event_date.default = local_dt.strftime("%Y-%m-%d")
                 self.event_time.default = local_dt.strftime("%H:%M")
-                self.description.default = existing_event.get("description", "")
-                self.duration_minutes.default = str(existing_event.get("duration_minutes", 60))
+                self.duration_val = int(existing_event.get("duration_minutes", 60) or 60)
                 self.reminder_minutes.default = str(
                     existing_event.get("reminder_minutes", _default_reminder_minutes()))
             except Exception as e:
@@ -267,12 +261,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
                 "❌ **Past Time Rejected!** Please schedule the event for a future time.",
                 ephemeral=True)
 
-        dur_raw = (self.duration_minutes.value or "60").strip()
-        if not dur_raw.isdigit() or int(dur_raw) <= 0 or int(dur_raw) > 1440:
-            return await interaction.followup.send(
-                "❌ **Invalid Duration!** Must be between `1` and `1440` minutes.",
-                ephemeral=True)
-        dur_val = int(dur_raw)
+        dur_val = self.duration_val
 
         rem_default = _default_reminder_minutes()
         rem_raw = (self.reminder_minutes.value or "").strip()
@@ -307,7 +296,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
             base_kwargs = dict(
                 event_id=self.existing_event["id"],
                 name=self.event_name.value,
-                description=self.description.value or "",
+                description=self.existing_event.get("description", ""),
                 start_time_utc=event_dt,
                 duration_minutes=dur_val,
                 channel_id=target_chan_id,
@@ -339,7 +328,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
         try:
             created = db.create_event(
                 event_id=event_id, name=self.event_name.value,
-                description=self.description.value or "",
+                description="",
                 start_time_utc=event_dt, duration_minutes=dur_val,
                 channel_id=target_chan_id, creator_id=interaction.user.id,
                 reminder_minutes=rem_val,
@@ -356,6 +345,12 @@ class EventCreateOrEditModal(discord.ui.Modal):
             print(f"[EVENTS] log_audit failed (create): {e}")
 
         target_channel = self.cog.bot.get_channel(target_chan_id)
+        if not target_channel and target_chan_id:
+            try:
+                target_channel = await self.cog.bot.fetch_channel(target_chan_id)
+            except Exception:
+                target_channel = None
+        ann_status = "⚠️ No announcement channel configured (set one with `/admin channels`)."
         if target_channel:
             try:
                 dual = format_dual_timestamps(event_dt, tz_off)
@@ -370,8 +365,12 @@ class EventCreateOrEditModal(discord.ui.Modal):
                           f"🔔 **Reminder:** {_format_reminder(rem_val)}"),
                     color=ROFColors.GOLD, footer_extra=f"Event ID: {event_id}")
                 await target_channel.send(embed=ann_embed)
+                ann_status = f"📢 Announced in <#{target_channel.id}>"
             except Exception as e:
                 print(f"[EVENTS] could not post announcement to {target_chan_id}: {e}")
+                ann_status = f"⚠️ Saved, but could not post to <#{target_chan_id}> (check bot channel permissions)."
+        elif target_chan_id:
+            ann_status = f"⚠️ Saved, but could not access channel `{target_chan_id}`."
 
         try:
             dual = format_dual_timestamps(event_dt, tz_off)
@@ -388,7 +387,8 @@ class EventCreateOrEditModal(discord.ui.Modal):
                 f"**Date:** {dual['short_date']}\n"
                 f"**Game Time:** `{dual['game_time_short']}` (`UTC-02:00`)\n"
                 f"**India Time:** `{dual['india_time_short']}` (`Asia/Kolkata`)\n"
-                f"**Reminder:** {_format_reminder(rem_val)}"),
+                f"**Reminder:** {_format_reminder(rem_val)}\n"
+                f"{ann_status}"),
             color=ROFColors.SUCCESS, footer_extra=f"Event ID: {created['id']}")
         view = EventConfirmationView(self.cog, created["id"])
         await interaction.followup.send(embed=confirm_embed, view=view, ephemeral=True)
@@ -418,6 +418,7 @@ class EventConfirmationView(discord.ui.View):
                 EventCreateOrEditModal(self.cog, existing_event=ev))
         except Exception as e:
             print(f"[EVENTS] send_modal failed (edit btn): {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
 
     @discord.ui.button(label="View Event", style=discord.ButtonStyle.secondary, emoji="👁️")
     async def view_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -486,6 +487,7 @@ class EventPickerSelect(discord.ui.Select):
                     EventCreateOrEditModal(self.cog, existing_event=ev))
             except Exception as e:
                 print(f"[EVENTS] send_modal (picker edit) failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
         elif self.action == "view":
             await interaction.response.send_message(
                 embed=build_event_detail_embed(ev), ephemeral=True)
@@ -566,6 +568,7 @@ class EventSetupView(discord.ui.View):
             await interaction.response.send_modal(EventCreateOrEditModal(self.cog))
         except Exception as e:
             print(f"[EVENTS] send_modal failed (setup): {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
 
 
 # ==============================================================================
@@ -589,7 +592,7 @@ class Events(commands.Cog):
                 "⚠️ Could not load events right now.", ephemeral=True)
         if not upcoming:
             return await interaction.response.send_message(
-                "📭 No upcoming events to pick from. Use `/add_event` to schedule one.",
+                "📭 No upcoming events to pick from. Use `/event add` to schedule one.",
                 ephemeral=True)
         await interaction.response.send_message(
             f"🎯 Pick an event to **{action}**:",
@@ -677,9 +680,7 @@ class Events(commands.Cog):
     # COMMANDS — flat, no /event group
     # ================================================================
 
-    @app_commands.command(name="events",
-                          description="View upcoming ROF alliance events in Game Time & India Time")
-    async def list_events(self, interaction: discord.Interaction):
+    async def _send_events_list(self, interaction: discord.Interaction):
         try:
             upcoming = db.get_upcoming_events(include_cancelled=False) or []
         except Exception as e:
@@ -736,11 +737,25 @@ class Events(commands.Cog):
             view = PaginatedEmbedView(interaction.user.id, pages)
             await interaction.response.send_message(embed=pages[0], view=view, ephemeral=True)
 
-    # ---------- /add_event ----------
-    @app_commands.command(name="add_event",
-                          description="Create a new ROF alliance event (Admin/Owner only)")
+    # ---------- /event COMMAND GROUP ----------
+    event_group = app_commands.Group(
+        guild_only=True,
+        name="event",
+        description="Create, edit, cancel, delete, and view ROF alliance events",
+    )
+
+    @app_commands.command(name="events",
+                          description="View upcoming ROF alliance events in Game Time & India Time")
+    async def list_events(self, interaction: discord.Interaction):
+        await self._send_events_list(interaction)
+
+    @event_group.command(name="list", description="View upcoming ROF alliance events in Game Time & India Time")
+    async def event_list_cmd(self, interaction: discord.Interaction):
+        await self._send_events_list(interaction)
+
+    @event_group.command(name="add", description="Create & announce a new ROF alliance event (Admin/Owner only)")
     @app_commands.describe(channel="Optional announcement channel (defaults to configured Event Channel)")
-    async def add_event_cmd(self, interaction: discord.Interaction,
+    async def event_add_cmd(self, interaction: discord.Interaction,
                             channel: Optional[discord.TextChannel] = None):
         if not await ensure_admin(interaction):
             return
@@ -749,14 +764,13 @@ class Events(commands.Cog):
             await interaction.response.send_modal(
                 EventCreateOrEditModal(self, channel_id=chan_id))
         except Exception as e:
-            print(f"[EVENTS] send_modal failed (add_event): {e}")
+            print(f"[EVENTS] send_modal failed (event add): {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
 
-    # ---------- /edit_event ----------
-    @app_commands.command(name="edit_event",
-                          description="Edit an existing alliance event (Admin/Owner only)")
+    @event_group.command(name="edit", description="Edit an existing alliance event (Admin/Owner only)")
     @app_commands.describe(event_id="The event ID — leave blank to pick from a list")
-    @app_commands.autocomplete(event_id=event_id_autocomplete)  # direct ref, no quotes
-    async def edit_event_cmd(self, interaction: discord.Interaction,
+    @app_commands.autocomplete(event_id=event_id_autocomplete)
+    async def event_edit_cmd(self, interaction: discord.Interaction,
                              event_id: Optional[str] = None):
         if not await ensure_admin(interaction):
             return
@@ -765,7 +779,7 @@ class Events(commands.Cog):
         try:
             ev = db.get_event(event_id)
         except Exception as e:
-            print(f"[EVENTS] get_event failed (edit_event): {e}")
+            print(f"[EVENTS] get_event failed (event edit): {e}")
             return await interaction.response.send_message(
                 "⚠️ Could not load that event right now.", ephemeral=True)
         if not ev:
@@ -775,14 +789,13 @@ class Events(commands.Cog):
             await interaction.response.send_modal(
                 EventCreateOrEditModal(self, existing_event=ev))
         except Exception as e:
-            print(f"[EVENTS] send_modal failed (edit_event): {e}")
+            print(f"[EVENTS] send_modal failed (event edit): {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
 
-    # ---------- /cancel_event ----------
-    @app_commands.command(name="cancel_event",
-                          description="Cancel a scheduled alliance event (Admin/Owner only)")
+    @event_group.command(name="cancel", description="Cancel a scheduled alliance event (Admin/Owner only)")
     @app_commands.describe(event_id="The event ID — leave blank to pick from a list")
     @app_commands.autocomplete(event_id=event_id_autocomplete)
-    async def cancel_event_cmd(self, interaction: discord.Interaction,
+    async def event_cancel_cmd(self, interaction: discord.Interaction,
                                event_id: Optional[str] = None):
         if not await ensure_admin(interaction):
             return
@@ -810,12 +823,10 @@ class Events(commands.Cog):
                 color=ROFColors.WARNING),
             ephemeral=True)
 
-    # ---------- /delete_event ----------
-    @app_commands.command(name="delete_event",
-                          description="Permanently delete an alliance event (Admin/Owner only)")
+    @event_group.command(name="delete", description="Permanently delete an alliance event (Admin/Owner only)")
     @app_commands.describe(event_id="The event ID — leave blank to pick from a list")
     @app_commands.autocomplete(event_id=event_id_autocomplete)
-    async def delete_event_cmd(self, interaction: discord.Interaction,
+    async def event_delete_cmd(self, interaction: discord.Interaction,
                                event_id: Optional[str] = None):
         if not await ensure_admin(interaction):
             return
@@ -824,7 +835,7 @@ class Events(commands.Cog):
         try:
             ev = db.get_event(event_id)
         except Exception as e:
-            print(f"[EVENTS] get_event failed (delete_event): {e}")
+            print(f"[EVENTS] get_event failed (event delete): {e}")
             return await interaction.response.send_message(
                 "⚠️ Could not load that event right now.", ephemeral=True)
         if not ev:
@@ -835,19 +846,17 @@ class Events(commands.Cog):
             f"This cannot be undone.",
             view=ConfirmDeleteView(event_id, ev.get("name", "?")), ephemeral=True)
 
-    # ---------- /view_event ----------
-    @app_commands.command(name="view_event",
-                          description="View full details and timezone conversions for an event")
+    @event_group.command(name="view", description="View full details and timezone conversions for an event")
     @app_commands.describe(event_id="The event ID — leave blank to pick from a list")
     @app_commands.autocomplete(event_id=event_id_autocomplete)
-    async def view_event_cmd(self, interaction: discord.Interaction,
+    async def event_view_cmd(self, interaction: discord.Interaction,
                              event_id: Optional[str] = None):
         if not event_id:
             return await self._show_picker(interaction, "view")
         try:
             ev = db.get_event(event_id)
         except Exception as e:
-            print(f"[EVENTS] get_event failed (view_event): {e}")
+            print(f"[EVENTS] get_event failed (event view): {e}")
             return await interaction.response.send_message(
                 "⚠️ Could not load that event right now.", ephemeral=True)
         if not ev:

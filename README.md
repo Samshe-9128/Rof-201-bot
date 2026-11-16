@@ -1,6 +1,6 @@
 # 🛡️ ROF Discord Bot — Gaming & Alliance Management System
 
-Official Discord bot for the **Rise of Farkers (ROF)** alliance, featuring the **ROF Gaming Arena** (10 Single-Player games + 9 Multiplayer Room games), dual-timezone **Alliance Event Scheduling** (`UTC-02:00` Game Time & `Asia/Kolkata` India Time with 10-minute persistent reminders), **Member Onboarding & Rules Management**, **Natural-Language Alliance Assistant**, and **Role-Based Access Control**.
+Official Discord bot for the **Rise of Farkers (ROF)** alliance, powered by **Python 3.11+** and **discord.py 2.4+** (slash commands, interactive Views, Buttons, Select Menus, and Modals).
 
 ## Quick Setup
 
@@ -13,13 +13,13 @@ Official Discord bot for the **Rise of Farkers (ROF)** alliance, featuring the *
    ```bash
    python bot.py
    ```
-   On first startup, the bot automatically creates `rof_bot.db` (SQLite with WAL mode) and non-destructively migrates any existing `.json` files (`arcade_data.json`, `events.json`, `rules.json`, `wordle_stats.json`).
+   On first startup, the bot automatically initializes `rof_bot.db` (SQLite with WAL mode) and migrates any legacy `.json` data.
 
 ## Key Commands
 
-- **Gaming Arena:** `/games`, `/codebreaker`, `/quickdraw`, `/wordle`, `/wordle_practice`, `/memory`, `/undercover`, `/connect4`, `/game stats`, `/game history`, `/game help`
-- **Profiles & Leaderboards:** `/profile`, `/leaderboard`, `/arcade_profile`, `/arcade_leaderboard`
-- **Events (UTC-2 & India Time):** `/events`, `/event create`, `/event edit`, `/event cancel`, `/event delete`, `/event view`
-- **Rules & Onboarding:** `/rules view`, `/rules add`, `/rules edit`, `/rules remove`, `/rof rules`, `/rof setrules`
+- **Fast & Interactive Games (Single-player games also work in DMs!):** `/games`, `/higherlower`, `/treasure`, `/tictactoe`, `/codebreaker`, `/quickdraw`, `/wordle`, `/wordle_practice`, `/memory`, `/connect4`, `/game stats`, `/game history`, `/game help`
+- **Profiles & Leaderboards:** `/profile`, `/leaderboard`
+- **Events (`UTC-2` & `Asia/Kolkata`):** `/events`, `/event add`, `/event edit`, `/event cancel`, `/event delete`, `/event view`, `/event list`
+- **Rules & Onboarding:** `/rules view`, `/rules add`, `/rules edit`, `/rules remove`
 - **Alliance AI Assistant:** `/knowledge add`, `/knowledge edit`, `/knowledge remove`, `/knowledge list` (plus natural language in DMs & configured channels)
 - **Administration & Security:** `/admin settings`, `/admin channels`, `/admin welcome`, `/admin permissions`

@@ -80,12 +80,6 @@ class SingleReactionActiveView(discord.ui.View):
             print(f"[QUICKDRAW] DB record failed (solo): {type(e).__name__}: {e}")
 
         # fix G: best-effort reload.
-        arcade = self.cog.bot.get_cog("ArcadeCore")
-        if arcade:
-            try:
-                arcade.reload_cache()
-            except Exception as e:
-                print(f"[QUICKDRAW] arcade reload failed: {e}")
 
         # fix C: safe profile access.
         try:
@@ -613,7 +607,7 @@ class QuickDraw(commands.Cog):
         ]
     )
     async def quickdraw(self, interaction: discord.Interaction, mode: str = "multi"):
-        if mode == "solo":
+        if mode == "solo" or interaction.guild is None:
             await self.launch_single_reaction_menu(interaction)
         else:
             await self.open_reaction_race_room(interaction)

@@ -13,11 +13,12 @@ from core.ui import rof_embed
 
 
 SINGLE_PLAYER_CATALOG = [
+    ("higher_lower", "⬆️⬇️ Higher or Lower", "Instant 1-click number streak — push your luck or Cash Out!"),
+    ("treasure_hunt", "💎 Treasure Hunt (3x3)", "Find 7 safe gems and avoid 2 hidden bombs — instant clicks!"),
     ("wordle_daily", "🔤 Wordle (Daily)", "Guess today's hidden 5-letter word in 6 attempts"),
     ("wordle_practice", "🔤 Wordle (Practice)", "Unlimited 5-letter Wordle practice"),
     ("word_scramble", "🔀 Word Scramble", "Unscramble mixed-up letters before the timer expires"),
     ("memory_sequence", "🔴 Memory Challenge", "Memorize and reproduce a growing colour sequence"),
-    ("memory_pairs", "🃏 Emoji Memory Match", "Memorize and match 8 animal emoji pairs"),
     ("quick_math", "🧮 Quick Math", "Solve rapid calculations in a 60-second sprint"),
     ("reaction_solo", "⚡ Reaction Speed Test", "Measure your reaction speed in milliseconds"),
     ("trivia_solo", "❓ Trivia Challenge", "Answer general knowledge questions across 8 categories"),
@@ -27,6 +28,8 @@ SINGLE_PLAYER_CATALOG = [
 ]
 
 MULTIPLAYER_CATALOG = [
+    ("tictactoe", "❌⭕ Tic-Tac-Toe (2p)", "Fast 3x3 grid duel — max 9 moves!"),
+    ("closest_wins", "🎯 Closest Wins (2–10p)", "20s simultaneous number guess — closest to target wins!"),
     ("codebreaker", "🔐 Four-Digit Codebreaker", "Priority Race: Crack the 4-digit secret code first!"),
     ("reaction_race", "⚡ Reaction Race (2–10p)", "Compete to click fastest when the green signal appears"),
     ("word_race", "🔤 Word Guessing Race (2–10p)", "Race to unscramble the same word across 3 rounds"),
@@ -34,7 +37,6 @@ MULTIPLAYER_CATALOG = [
     ("trivia_battle", "❓ Trivia Battle (2–10p)", "Lock in private trivia answers and climb the live scoreboard"),
     ("rps_multi", "✂️ Multiplayer RPS (2p)", "1v1 Best of 3 duel with hidden move selection"),
     ("emoji_race", "🎭 Multiplayer Emoji Guessing (2–10p)", "First player to solve each emoji puzzle wins the round"),
-    ("undercover", "🕵️ Undercover Spy (3–6p)", "Social deduction: discover who received the spy word"),
     ("connect4", "🔴 Connect 4 (2p)", "Classic 7x6 grid strategy duel"),
 ]
 
@@ -121,6 +123,16 @@ class SinglePlayerMenuView(discord.ui.View):
             print(f"[LAUNCHER] single dispatch error ({choice}): {type(e).__name__}: {e}")
             traceback.print_exc()
             await _notify_error(interaction)
+            return
+
+        # Reset dropdown selection so the user can launch the same game again from /games.
+        if interaction.response.is_done() and interaction.message:
+            try:
+                for opt in self.select.options:
+                    opt.default = False
+                await interaction.followup.edit_message(interaction.message.id, view=self)
+            except Exception:
+                pass
 
     async def _dispatch(self, interaction: discord.Interaction, choice: str) -> None:
         sp_cog = self.bot.get_cog("SinglePlayerGames")
@@ -144,10 +156,22 @@ class SinglePlayerMenuView(discord.ui.View):
                 return await _notify_error(interaction, "⚠️ Word Scramble is currently unavailable.")
             await sp_cog.launch_word_scramble(interaction)
 
-        elif choice in ("memory_sequence", "memory_pairs"):
+        elif choice == "higher_lower":
+            fast_cog = self.bot.get_cog("FastGames")
+            if not fast_cog:
+                return await _notify_error(interaction, "⚠️ Higher or Lower is currently unavailable.")
+            await fast_cog.start_higher_lower(interaction)
+
+        elif choice == "treasure_hunt":
+            fast_cog = self.bot.get_cog("FastGames")
+            if not fast_cog:
+                return await _notify_error(interaction, "⚠️ Treasure Hunt is currently unavailable.")
+            await fast_cog.start_treasure_hunt(interaction)
+
+        elif choice == "memory_sequence":
             if not mem_cog:
                 return await _notify_error(interaction, "⚠️ Memory is currently unavailable.")
-            await mem_cog.memory(interaction)
+            await mem_cog.start_sequence_memory(interaction)
 
         elif choice == "quick_math":
             if not sp_cog:
@@ -245,12 +269,22 @@ class MultiplayerMenuView(discord.ui.View):
             print(f"[LAUNCHER] multi dispatch error ({choice}): {type(e).__name__}: {e}")
             traceback.print_exc()
             await _notify_error(interaction)
+            return
+
+        # Reset dropdown selection so the user can launch the same game again from /games.
+        if interaction.response.is_done() and interaction.message:
+            try:
+                for opt in self.select.options:
+                    opt.default = False
+                await interaction.followup.edit_message(interaction.message.id, view=self)
+            except Exception:
+                pass
 
     async def _dispatch(self, interaction: discord.Interaction, choice: str) -> None:
         cb_cog = self.bot.get_cog("Codebreaker")
         qd_cog = self.bot.get_cog("QuickDraw")
         mp_cog = self.bot.get_cog("MultiplayerGames")
-        uc_cog = self.bot.get_cog("Undercover")
+        fast_cog = self.bot.get_cog("FastGames")
         c4_cog = self.bot.get_cog("Connect4")
 
         if choice == "codebreaker":
@@ -268,10 +302,15 @@ class MultiplayerMenuView(discord.ui.View):
                 return await _notify_error(interaction, "⚠️ Multiplayer games are currently unavailable.")
             await mp_cog.open_multiplayer_room(interaction, choice)
 
-        elif choice == "undercover":
-            if not uc_cog:
-                return await _notify_error(interaction, "⚠️ Undercover is currently unavailable.")
-            await uc_cog.open_undercover_room(interaction)
+        elif choice == "tictactoe":
+            if not fast_cog:
+                return await _notify_error(interaction, "⚠️ Tic-Tac-Toe is currently unavailable.")
+            await fast_cog.open_tictactoe_room(interaction)
+
+        elif choice == "closest_wins":
+            if not fast_cog:
+                return await _notify_error(interaction, "⚠️ Closest Wins is currently unavailable.")
+            await fast_cog.open_closest_wins_room(interaction)
 
         elif choice == "connect4":
             if not c4_cog:
@@ -320,7 +359,7 @@ class GamingArenaMainView(discord.ui.View):
             description=(
                 "Welcome to the **ROF Gaming Arena**!\n"
                 "Choose how you want to play using the controls below.\n\n"
-                "🎯 **Single Player** — 10 solo skill, puzzle, trivia, and reflex games\n"
+                "🎯 **Single Player** — 12 solo skill, puzzle, trivia, and reflex games\n"
                 "🏟️ **Multiplayer** — Create or join live alliance game rooms\n"
                 f"🔥 **Active Games** — `{room_count}` room(s) currently active\n"
                 "🏆 **Leaderboard** — Overall, Weekly, and Per-Game rankings\n"
@@ -345,6 +384,11 @@ class GamingArenaMainView(discord.ui.View):
 
     @discord.ui.button(label="Multiplayer", style=discord.ButtonStyle.success, emoji="🏟️", row=0)
     async def multi_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            return await interaction.response.send_message(
+                "🏟️ Multiplayer rooms need a server channel! Click **Single Player** to play solo games here in DMs.",
+                ephemeral=True,
+            )
         if not self._is_owner(interaction):
             return await interaction.response.send_message(
                 "This isn't your menu!", ephemeral=True
@@ -476,7 +520,8 @@ def build_game_help_embed() -> discord.Embed:
             "• **Trivia Battle:** Private locked-in answers with live scoreboard & tie handling.\n"
             "• **Multiplayer RPS:** 1v1 Best of 3/5 with hidden move selection.\n"
             "• **Multiplayer Emoji Guessing:** Multi-round emoji puzzle race.\n"
-            "• **Undercover (`/undercover`) & Connect 4 (`/connect4`):** Classic party & board duels."
+            "• **Tic-Tac-Toe (`/tictactoe`) & Closest Wins:** Fast 3x3 duels & 20s party number guesses.\n"
+            "• **Connect 4 (`/connect4`):** Classic 7x6 grid strategy duel."
         ),
         inline=False,
     )
@@ -525,7 +570,7 @@ class Launcher(commands.Cog):
                 "`/quickdraw` — Start a Reaction Race (2–10p) or Solo Reaction Test\n"
                 "`/wordle` & `/wordle_practice` — Daily & unlimited 5-letter Wordle\n"
                 "`/memory` — Sequence Memory Challenge & Emoji Pair Match\n"
-                "`/undercover` & `/connect4` — Multiplayer party & strategy games\n"
+                "`/tictactoe`, `/connect4` & `/higherlower`, `/treasure` — Fast strategy & streak games\n"
                 "`/game stats`, `/game history`, `/game help` — Detailed gaming info"
             ),
             inline=False,
@@ -542,7 +587,7 @@ class Launcher(commands.Cog):
             name="📅 Alliance Events & Rules",
             value=(
                 "`/events` — View upcoming alliance events in Game Time (`UTC-2`) & India Time (`IST`)\n"
-                "`/event view <id>` — View detailed countdown for a specific event\n"
+                "`/event add|edit|cancel|delete|view|list` — Manage & announce alliance events\n"
                 "`/rules` — Read the official ROF Alliance rules"
             ),
             inline=False,
@@ -566,7 +611,7 @@ class Launcher(commands.Cog):
     async def game_stats_cmd(
         self,
         interaction: discord.Interaction,
-        member: Optional[discord.Member] = None,
+        member: Optional[discord.User] = None,
     ):
         target = member or interaction.user
         arcade = self.bot.get_cog("ArcadeCore")
@@ -584,7 +629,7 @@ class Launcher(commands.Cog):
     async def game_history_cmd(
         self,
         interaction: discord.Interaction,
-        member: Optional[discord.Member] = None,
+        member: Optional[discord.User] = None,
     ):
         target = member or interaction.user
 

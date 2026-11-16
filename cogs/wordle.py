@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from core.config import BASE_DIR, OWNER_ID, ROFColors
 from core.database import db
+from core.ui import safe_reply_error
 
 load_dotenv()
 
@@ -26,7 +27,6 @@ VALID_FILE = os.path.join(BASE_DIR, 'wordle_valid.txt')
 STATS_FILE = os.path.join(BASE_DIR, 'wordle_stats.json')
 GAMES_FILE = os.path.join(BASE_DIR, 'wordle_games.json')
 DAILY_FILE = os.path.join(BASE_DIR, 'wordle_daily.json')
-APPROVED_FILE = os.path.join(BASE_DIR, 'approved.json')
 
 GUESS_COOLDOWN_SEC = 2
 
@@ -57,8 +57,6 @@ def load_word_list(path):
 
 def is_authorized(user_id):
     if OWNER_ID and int(user_id) == int(OWNER_ID):
-        return True
-    if int(user_id) in load_json(APPROVED_FILE, []):
         return True
     # Allow alliance members when wordle_open_to_all is enabled in config
     return db.get_config("wordle_open_to_all", "true").lower() == "true"
@@ -163,6 +161,7 @@ class WordleGameView(discord.ui.View):
             await interaction.response.send_modal(GuessModal(self.cog, self.user_id, self.mode))
         except Exception as e:
             print(f"[WORDLE] send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     @discord.ui.button(label="Give Up", style=discord.ButtonStyle.danger, emoji="🏳️")
     async def giveup_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -538,9 +537,6 @@ class Wordle(commands.Cog):
             mode=mode,
             username=username,
         )
-        arcade = self.bot.get_cog("ArcadeCore")
-        if arcade:
-            arcade.reload_cache()
 
         if mode != 'daily':
             return
@@ -623,79 +619,6 @@ class Wordle(commands.Cog):
             await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
             return
         await self.start_game(interaction, 'practice')
-
-    @app_commands.command(name="wordle_stats", description="View your Wordle statistics")
-    async def wordle_stats_cmd(self, interaction: discord.Interaction):
-        if not is_authorized(interaction.user.id):
-            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
-            return
-        await self.send_user_stats(interaction)
-
-    @app_commands.command(name="wordle_leaderboard", description="View the ROF Wordle leaderboard")
-    async def wordle_leaderboard_cmd(self, interaction: discord.Interaction):
-        if not is_authorized(interaction.user.id):
-            await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
-            return
-        entries = [(uid, s) for uid, s in self.stats.items() if s.get('games_played', 0) > 0]
-        if not entries:
-            await interaction.response.send_message("No games played yet. Be the first!", ephemeral=True)
-            return
-        entries.sort(
-            key=lambda x: (x[1].get('wins', 0), x[1].get('current_streak', 0), -x[1].get('games_played', 1)),
-            reverse=True,
-        )
-        embed = discord.Embed(title="🏆 ROF Wordle Leaderboard", color=ROFColors.GOLD)
-        lines = []
-        for i, (uid, s) in enumerate(entries[:10], 1):
-            name = None
-            if interaction.guild:
-                m = interaction.guild.get_member(int(uid))
-                if m:
-                    name = m.display_name
-            if not name:
-                u = self.bot.get_user(int(uid))
-                if u:
-                    name = u.display_name
-            if not name:
-                p_prof = db.get_player_profile(int(uid))
-                name = p_prof.get("username") or f"User {uid}"
-
-            medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(i, f"`#{i}`")
-            played, wins = s.get('games_played', 0), s.get('wins', 0)
-            wr = round(wins / played * 100) if played else 0
-            lines.append(
-                f"{medal} **{name}** — {wins}W/{played}G ({wr}%) · 🔥{s.get('current_streak', 0)} · 🏆{s.get('max_streak', 0)}"
-            )
-        embed.description = '\n'.join(lines)
-        embed.set_footer(text="Ranked by wins → current streak • ROF Gaming Arena")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="wordle_help", description="Learn how to play ROF Wordle")
-    async def wordle_help_cmd(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🔤 ROF Wordle — Rules",
-            description=(
-                "Guess the hidden **5-letter word** in **6 attempts**.\n\n"
-                f"{GREEN} — Correct letter, correct position\n"
-                f"{YELLOW} — Correct letter, wrong position\n"
-                f"{GREY} — Letter not in the word\n\n"
-                "**Commands**\n"
-                "`/wordle` — Today's daily puzzle\n"
-                "`/wordle_practice` — Unlimited practice\n"
-                "`/wordle_stats` — Your personal stats\n"
-                "`/wordle_leaderboard` — Alliance rankings\n"
-                "`/wordle_help` — This message\n\n"
-                "**Tips**\n"
-                "• Any 5-letter A–Z word is accepted as a guess — even non-dictionary "
-                "probe words like `XYLYL`, `FJORD`, `CRWTH`.\n"
-                "• Use probe words to test high-value letters early.\n"
-                "• Use the **📋 Share Result** button to copy a spoiler-free result.\n"
-                "• Only **daily** games count for daily streaks.\n"
-                "• New word every day at **00:00 UTC**."
-            ),
-            color=ROFColors.ARENA,
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot):

@@ -201,3 +201,42 @@ class PaginatedEmbedView(discord.ui.View):
         self.index = min(len(self.pages) - 1, self.index + 1)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+
+async def safe_reply_error(
+    interaction: discord.Interaction,
+    message: str = "⚠️ Something went wrong while running that action. Please try again.",
+) -> None:
+    """Always send a visible ephemeral error so Discord never shows 'The application did not respond'."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception:
+        pass
+
+
+def install_global_ui_error_handlers() -> None:
+    """Ensure every View (Buttons/Selects) and Modal replies cleanly if an unexpected error occurs."""
+    import traceback
+    from core.logger import log
+
+    async def _view_on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+        log.error("UI View error in %s (%s): %s", type(self).__name__, type(item).__name__, error)
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await safe_reply_error(
+            interaction,
+            "⚠️ That button or menu hit an unexpected error. Please run the command again.",
+        )
+
+    async def _modal_on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("UI Modal error in %s: %s", type(self).__name__, error)
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await safe_reply_error(
+            interaction,
+            "⚠️ Something went wrong while submitting that form. Please check your input and try again.",
+        )
+
+    discord.ui.View.on_error = _view_on_error
+    discord.ui.Modal.on_error = _modal_on_error

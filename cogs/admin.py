@@ -18,6 +18,7 @@ class Admin(commands.Cog):
         self.bot = bot
 
     admin_group = app_commands.Group(
+        guild_only=True,
         name="admin",
         description="ROF Administration, Channel Configuration, Welcome Setup, and Security Controls",
     )

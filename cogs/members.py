@@ -16,7 +16,7 @@ from core.config import (
 )
 from core.database import db
 from core.permissions import ensure_admin
-from core.ui import rof_embed
+from core.ui import safe_reply_error, rof_embed
 
 
 # ==============================================================================
@@ -372,6 +372,7 @@ class Members(commands.Cog):
     # ---------- /rules COMMAND GROUP ----------
 
     rules_group = app_commands.Group(
+        guild_only=True,
         name="rules", description="View and manage official ROF Alliance rules"
     )
 
@@ -436,6 +437,7 @@ class Members(commands.Cog):
                 await interaction.response.send_modal(RulesModal())
             except Exception as e:
                 print(f"[MEMBERS] send_modal failed (rules edit): {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
             return
 
         # fix G: guarded DB write.
@@ -505,35 +507,6 @@ class Members(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# ==============================================================================
-# LEGACY /rof GROUP
-# ==============================================================================
-
-rof_group = app_commands.Group(name="rof", description="ROF Alliance Commands")
-
-
-@rof_group.command(name="rules", description="View the ROF Alliance rules")
-async def view_rules_legacy(interaction: discord.Interaction):
-    # fix I: load_rules() already returns a fallback instead of raising.
-    embed = rof_embed(
-        title="📜 ROF ALLIANCE RULES",
-        description=load_rules(),
-        color=ROFColors.ARENA,
-    )
-    await interaction.response.send_message(embed=embed)
-
-
-@rof_group.command(name="setrules", description="Set the ROF Alliance rules (Admin only)")
-async def set_rules_legacy(interaction: discord.Interaction):
-    if not await ensure_admin(interaction):
-        return
-    try:
-        await interaction.response.send_modal(RulesModal())
-    except Exception as e:
-        print(f"[MEMBERS] send_modal failed (legacy setrules): {e}")
-
 
 async def setup(bot: commands.Bot):
-    if not bot.tree.get_command("rof"):
-        bot.tree.add_command(rof_group)
     await bot.add_cog(Members(bot))

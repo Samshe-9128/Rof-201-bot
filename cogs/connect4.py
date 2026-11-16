@@ -328,6 +328,7 @@ class Connect4(commands.Cog):
         except Exception:
             pass
 
+    @app_commands.guild_only()
     @app_commands.command(name="connect4", description="Start a 2-player Connect 4 duel")
     async def connect4(self, interaction: discord.Interaction):
         await self.open_connect4_room(interaction)

@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 from core.config import DEFAULT_TZ_OFFSET, ROFColors, format_dual_timestamps
 from core.database import db
 from core.permissions import ensure_admin
-from core.ui import PaginatedEmbedView, rof_embed
+from core.ui import PaginatedEmbedView, rof_embed, safe_reply_error
 
 
 GAME_EXPLANATIONS = {
@@ -298,6 +298,27 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
     )
 
 
+
+async def knowledge_key_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> List[app_commands.Choice[str]]:
+    try:
+        items = db.list_knowledge()
+    except Exception:
+        return []
+    q = (current or "").strip().lower()
+    choices = []
+    for item in items:
+        key = item.get("key", "")
+        title = item.get("title", key)
+        if not q or q in key.lower() or q in title.lower():
+            label = f"{key} — {title}"[:100]
+            choices.append(app_commands.Choice(name=label, value=key))
+        if len(choices) >= 25:
+            break
+    return choices
+
+
 class KnowledgeModal(discord.ui.Modal):
     key_input = discord.ui.TextInput(
         label="Unique Topic Key",
@@ -337,7 +358,7 @@ class KnowledgeModal(discord.ui.Modal):
             self.key_input.default = existing["key"]
             self.title_input.default = existing["title"]
             self.category_input.default = existing["category"]
-            self.keywords_input.default = existing.get("keywords", "")
+            self.keywords_input.default = existing.get("keywords") or ""
             self.content_input.default = existing["content"]
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -378,14 +399,10 @@ class KnowledgeModal(discord.ui.Modal):
         except Exception as e:
             print(f"[ASSISTANT] KnowledgeModal.on_submit failed: {type(e).__name__}: {e}")
             traceback.print_exc()
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⚠️ Could not save the knowledge entry. Please try again.",
-                        ephemeral=True,
-                    )
-            except Exception:
-                pass
+            await safe_reply_error(
+                interaction,
+                "⚠️ Could not save the knowledge entry. Please try again.",
+            )
 
 
 class DMHandler(commands.Cog):
@@ -467,10 +484,15 @@ class DMHandler(commands.Cog):
     async def knowledge_add_cmd(self, interaction: discord.Interaction):
         if not await ensure_admin(interaction):
             return
-        await interaction.response.send_modal(KnowledgeModal())
+        try:
+            await interaction.response.send_modal(KnowledgeModal())
+        except Exception as e:
+            print(f"[ASSISTANT] send_modal failed (knowledge add): {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
 
     @knowledge_group.command(name="edit", description="Edit an existing Knowledge Base entry by key (Admin/Owner only)")
     @app_commands.describe(key="The unique key of the knowledge entry to edit (use /knowledge list to view keys)")
+    @app_commands.autocomplete(key=knowledge_key_autocomplete)
     async def knowledge_edit_cmd(self, interaction: discord.Interaction, key: str):
         if not await ensure_admin(interaction):
             return
@@ -488,10 +510,15 @@ class DMHandler(commands.Cog):
                 f"❌ Knowledge entry `{key}` not found. Use `/knowledge list` to view available keys.",
                 ephemeral=True,
             )
-        await interaction.response.send_modal(KnowledgeModal(existing=existing))
+        try:
+            await interaction.response.send_modal(KnowledgeModal(existing=existing))
+        except Exception as e:
+            print(f"[ASSISTANT] send_modal failed (knowledge edit): {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
 
     @knowledge_group.command(name="remove", description="Remove an entry from the Knowledge Base (Admin/Owner only)")
     @app_commands.describe(key="The unique key of the knowledge entry to remove")
+    @app_commands.autocomplete(key=knowledge_key_autocomplete)
     async def knowledge_remove_cmd(self, interaction: discord.Interaction, key: str):
         if not await ensure_admin(interaction):
             return

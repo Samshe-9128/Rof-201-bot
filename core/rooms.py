@@ -52,7 +52,20 @@ class RoomManager:
             if rid not in self.rooms:
                 return rid
 
+    def purge_stale_rooms(self) -> None:
+        now = time.time()
+        for rid, room in list(self.rooms.items()):
+            age = now - room.created_at
+            if (
+                room.status in ("finished", "closed")
+                or (room.status == "waiting" and age > 600)
+                or (room.status == "active" and age > 1800)
+            ):
+                room.status = "closed"
+                self.rooms.pop(rid, None)
+
     def get_player_active_room(self, user_id: int, game_key: Optional[str] = None) -> Optional[MultiplayerRoom]:
+        self.purge_stale_rooms()
         for room in list(self.rooms.values()):
             if room.status in ("waiting", "active"):
                 if game_key is None or room.game_key == game_key:
@@ -99,14 +112,8 @@ class RoomManager:
             room.status = "closed"
 
     def list_active_rooms(self) -> List[MultiplayerRoom]:
-        now = time.time()
-        valid = []
-        for rid, room in list(self.rooms.items()):
-            if room.status in ("finished", "closed") or (room.status == "waiting" and now - room.created_at > 600):
-                self.rooms.pop(rid, None)
-            else:
-                valid.append(room)
-        return valid
+        self.purge_stale_rooms()
+        return list(self.rooms.values())
 
 
 room_manager = RoomManager()

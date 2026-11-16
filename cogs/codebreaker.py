@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from core.config import GUILD_ID, ROFColors
 from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import rof_embed
+from core.ui import safe_reply_error, rof_embed
 
 
 def generate_secret_code(allow_repeats: bool = False) -> str:
@@ -234,6 +234,7 @@ class CodebreakerMatchView(discord.ui.View):
             await interaction.response.send_modal(CodebreakerRaceModal(self))
         except Exception as e:
             print(f"[CODEBREAKER] send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
             try:
                 await interaction.response.send_message(
                     "⚠️ Could not open the guess dialog. Please try again.",
@@ -574,6 +575,7 @@ class CodebreakerGameView(discord.ui.View):
             await interaction.response.send_modal(GuessModal(self))
         except Exception as e:
             print(f"[CODEBREAKER] send_modal failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     def get_embed(self):
         embed = rof_embed(
@@ -738,6 +740,7 @@ class Codebreaker(commands.Cog):
         except Exception:
             pass
 
+    @app_commands.guild_only()
     @app_commands.command(
         name="codebreaker",
         description="Start a Four-Digit Codebreaker Multiplayer Room or 1v1 Duel",
@@ -759,9 +762,13 @@ class Codebreaker(commands.Cog):
                 return await interaction.response.send_message(
                     "⚠️ Please choose a valid human opponent.", ephemeral=True
                 )
-            return await interaction.response.send_modal(
-                SetCodeModal(self, interaction.user, opponent)
-            )
+            try:
+                return await interaction.response.send_modal(
+                    SetCodeModal(self, interaction.user, opponent)
+                )
+            except Exception as e:
+                print(f"[CODEBREAKER] send_modal failed (SetCodeModal): {e}")
+                return await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
 
         attempts = max(4, min(20, attempts))
         timer_seconds = max(30, min(600, timer_seconds))
