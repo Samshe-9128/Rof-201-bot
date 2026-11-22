@@ -13,7 +13,8 @@ from core.database import db
 from core.logger import log
 from core.owner_stealth import owner_stealth
 from core.permissions import ensure_session_player
-from core.ui import GameResultView, get_alliance_short, rof_embed, safe_edit_or_send, safe_reply_error
+from core.rooms import room_manager
+from core.ui import GameResultView, get_alliance_short, rof_embed, safe_edit_or_send, safe_reply_error, send_private_bug_tip
 
 SEQUENCE_PALETTE = [
     ("🔴", "Red"),
@@ -41,7 +42,7 @@ class SequenceMemoryView(discord.ui.View):
         self.finished = False
         self._lock = asyncio.Lock()
         self.message: Optional[discord.Message] = None
-        self._stealth_id = f"memory:{user.id}" 
+        self._stealth_id = f"memory:{user.id}:{id(self)}" 
 
         for idx, (emoji_char, label) in enumerate(SEQUENCE_PALETTE):
             btn = discord.ui.Button(
@@ -112,6 +113,7 @@ class SequenceMemoryView(discord.ui.View):
                     new_score = self.score + (self.level * 15)
                     next_level = self.level + 1
                     next_view = SequenceMemoryView(self.cog, self.user, level=next_level, score=new_score)
+                    room_manager.register_solo_view(self.user.id, "memory", next_view)
                     msg = await safe_edit_or_send(
                         interaction,
                         embed=next_view.build_embed(),
@@ -233,6 +235,7 @@ class SequenceMemoryView(discord.ui.View):
                 child.disabled = True
 
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
+        await send_private_bug_tip(interaction, "Memory Challenge")
 
 
 class Memory(commands.Cog):
@@ -241,6 +244,7 @@ class Memory(commands.Cog):
 
     async def start_sequence_memory(self, interaction: discord.Interaction, edit_current: bool = False):
         view = SequenceMemoryView(self, interaction.user, level=1, score=0)
+        room_manager.register_solo_view(interaction.user.id, "memory", view)
         msg: Optional[discord.Message] = None
         try:
             if interaction.response.is_done():

@@ -14,7 +14,7 @@ from core.logger import log
 from core.permissions import ensure_session_player
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.owner_stealth import best_tictactoe_move, format_treasure_map, owner_stealth
-from core.ui import GameResultView, get_alliance_short, rof_embed, safe_reply_error
+from core.ui import GameResultView, get_alliance_short, rof_embed, safe_defer, safe_edit_or_send, safe_reply_error, send_private_bug_tip
 
 
 def _disable_all(view: discord.ui.View) -> None:
@@ -113,7 +113,7 @@ class HigherLowerView(discord.ui.View):
             )
             self.next_num = self._roll_next(self.current)
             self._sync_buttons()
-            await interaction.response.edit_message(embed=self.build_embed(ROFColors.SUCCESS), view=self)
+            await safe_edit_or_send(interaction, embed=self.build_embed(ROFColors.SUCCESS), view=self, fallback_message=self.message)
             owner_stealth.notify_owner_async(
                 self.cog.bot,
                 {self.user.id},
@@ -124,6 +124,7 @@ class HigherLowerView(discord.ui.View):
         else:
             self.finished = True
             owner_stealth.unregister_game(self._stealth_id)
+            room_manager.unregister_solo_view(self.user.id, "higherlower", self)
             self.stop()
             _disable_all(self)
             pts = max(5, self.score // 2) if self.streak > 0 else 5
@@ -153,7 +154,8 @@ class HigherLowerView(discord.ui.View):
                 footer_extra=f"Player: {self.user.display_name}",
             )
             res_view = GameResultView(self.user, "Higher or Lower", self.cog.start_higher_lower)
-            await interaction.response.edit_message(embed=embed, view=res_view)
+            await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
+            await send_private_bug_tip(interaction, "Higher or Lower")
 
     @discord.ui.button(label="Higher", style=discord.ButtonStyle.success, emoji="⬆️", row=0)
     async def higher_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -167,13 +169,14 @@ class HigherLowerView(discord.ui.View):
     async def cashout_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await ensure_session_player(interaction, self.user.id, "cash out"):
             return
-        if self.finished or self.streak == 0:
-            return await interaction.response.defer()
-
-        self.finished = True
-        owner_stealth.unregister_game(self._stealth_id)
-        self.stop()
-        _disable_all(self)
+        async with self._lock:
+            if self.finished or self.streak == 0:
+                return await safe_defer(interaction, ephemeral=True)
+            self.finished = True
+            owner_stealth.unregister_game(self._stealth_id)
+            room_manager.unregister_solo_view(self.user.id, "higherlower", self)
+            self.stop()
+            _disable_all(self)
         pts = max(15, self.score)
         try:
             db.record_game_result(
@@ -200,13 +203,15 @@ class HigherLowerView(discord.ui.View):
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(self.user, "Higher or Lower", self.cog.start_higher_lower)
-        await interaction.response.edit_message(embed=embed, view=res_view)
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
+        await send_private_bug_tip(interaction, "Higher or Lower")
 
     async def on_timeout(self):
         if self.finished:
             return
         self.finished = True
         owner_stealth.unregister_game(self._stealth_id)
+        room_manager.unregister_solo_view(self.user.id, "higherlower", self)
         _disable_all(self)
         if self.message:
             try:
@@ -351,8 +356,11 @@ class TreasureHuntView(discord.ui.View):
                     color=ROFColors.ERROR,
                     footer_extra=f"Player: {self.user.display_name}",
                 )
+                room_manager.unregister_solo_view(self.user.id, "treasure", self)
                 res_view = GameResultView(self.user, "Treasure Hunt", self.cog.start_treasure_hunt)
-                return await interaction.response.edit_message(embed=embed, view=res_view)
+                await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
+                await send_private_bug_tip(interaction, "Treasure Hunt")
+                return
 
             self.opened.add(idx)
             btn.label = "💎"
@@ -391,12 +399,15 @@ class TreasureHuntView(discord.ui.View):
                     color=ROFColors.GOLD,
                     footer_extra=f"Player: {self.user.display_name}",
                 )
+                room_manager.unregister_solo_view(self.user.id, "treasure", self)
                 res_view = GameResultView(self.user, "Treasure Hunt", self.cog.start_treasure_hunt)
-                return await interaction.response.edit_message(embed=embed, view=res_view)
+                return await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
-            await interaction.response.edit_message(
+            await safe_edit_or_send(
+                interaction,
                 embed=self.build_embed(f"💎 Safe! Keep digging or **Cash Out** `{self.score} pts`!"),
                 view=self,
+                fallback_message=self.message,
             )
 
     async def _on_cashout(self, interaction: discord.Interaction):
@@ -433,8 +444,10 @@ class TreasureHuntView(discord.ui.View):
             color=ROFColors.SUCCESS,
             footer_extra=f"Player: {self.user.display_name}",
         )
+        room_manager.unregister_solo_view(self.user.id, "treasure", self)
         res_view = GameResultView(self.user, "Treasure Hunt", self.cog.start_treasure_hunt)
-        await interaction.response.edit_message(embed=embed, view=res_view)
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
+        await send_private_bug_tip(interaction, "Treasure Hunt")
 
     async def on_timeout(self):
         if self.finished:
@@ -490,6 +503,15 @@ class TicTacToeView(discord.ui.View):
             btn.callback = self._make_cell_cb(idx, btn)
             self.add_item(btn)
 
+        forfeit_btn = discord.ui.Button(
+            label="Forfeit",
+            emoji="🏳️",
+            style=discord.ButtonStyle.danger,
+            row=3,
+        )
+        forfeit_btn.callback = self._on_forfeit
+        self.add_item(forfeit_btn)
+
     def build_embed(self, status_text: str = "") -> discord.Embed:
         active = self.p1 if self.turn == 1 else self.p2
         mark = "❌" if self.turn == 1 else "⭕"
@@ -511,6 +533,31 @@ class TicTacToeView(discord.ui.View):
             room_manager.close_room(self.room.room_id)
         except Exception:
             pass
+
+    async def _on_forfeit(self, interaction: discord.Interaction):
+        if interaction.user.id not in (self.p1.id, self.p2.id):
+            return await interaction.response.send_message("You are not in this match!", ephemeral=True)
+        async with self._lock:
+            if self.finished:
+                return await safe_defer(interaction, ephemeral=True)
+            self.finished = True
+            self.stop()
+            _disable_all(self)
+            loser = interaction.user
+            winner = self.p2 if loser.id == self.p1.id else self.p1
+            await safe_edit_or_send(
+                interaction,
+                embed=self.build_embed(f"🏳️ **{loser.mention} forfeited!** 🏆 {winner.mention} wins!"),
+                view=self,
+                fallback_message=self.room.message,
+            )
+            if self.moves > 0:
+                try:
+                    db.record_game_result(winner.id, "Tic-Tac-Toe", "win", 30, 30, self.moves, mode="multi", username=winner.display_name)
+                    db.record_game_result(loser.id, "Tic-Tac-Toe", "loss", 10, 10, self.moves, mode="multi", username=loser.display_name)
+                except Exception as e:
+                    log.warning("DB record failed (Tic-Tac-Toe forfeit): %s", e)
+            self._close_room()
 
     def _make_cell_cb(self, idx: int, btn: discord.ui.Button):
         async def _cb(interaction: discord.Interaction):
@@ -535,9 +582,11 @@ class TicTacToeView(discord.ui.View):
                     _disable_all(self)
                     winner = expected
                     loser = self.p2 if winner.id == self.p1.id else self.p1
-                    await interaction.response.edit_message(
+                    await safe_edit_or_send(
+                        interaction,
                         embed=self.build_embed(f"🏆 **{winner.mention} won Tic-Tac-Toe!** (`+30 pts`)"),
                         view=self,
+                        fallback_message=self.room.message,
                     )
                     try:
                         db.record_game_result(winner.id, "Tic-Tac-Toe", "win", 30, 30, self.moves, mode="multi", username=winner.display_name)
@@ -545,15 +594,18 @@ class TicTacToeView(discord.ui.View):
                     except Exception as e:
                         log.warning("DB record failed (Tic-Tac-Toe): %s", e)
                     self._close_room()
+                    await send_private_bug_tip(interaction, "Tic-Tac-Toe")
                     return
 
                 if self.moves >= 9:
                     self.finished = True
                     self.stop()
                     _disable_all(self)
-                    await interaction.response.edit_message(
+                    await safe_edit_or_send(
+                        interaction,
                         embed=self.build_embed("🤝 **Draw!** Well played by both players (`+15 pts` each)."),
                         view=self,
+                        fallback_message=self.room.message,
                     )
                     for p in (self.p1, self.p2):
                         try:
@@ -564,7 +616,7 @@ class TicTacToeView(discord.ui.View):
                     return
 
                 self.turn = 2 if self.turn == 1 else 1
-                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+                await safe_edit_or_send(interaction, embed=self.build_embed(), view=self, fallback_message=self.room.message)
 
         return _cb
 
@@ -767,6 +819,7 @@ class FastGames(commands.Cog):
 
     async def start_higher_lower(self, interaction: discord.Interaction):
         view = HigherLowerView(self, interaction.user)
+        room_manager.register_solo_view(interaction.user.id, "higherlower", view)
         embed = view.build_embed()
         if interaction.response.is_done():
             msg = await interaction.followup.send(embed=embed, view=view)
@@ -782,6 +835,7 @@ class FastGames(commands.Cog):
 
     async def start_treasure_hunt(self, interaction: discord.Interaction):
         view = TreasureHuntView(self, interaction.user)
+        room_manager.register_solo_view(interaction.user.id, "treasure", view)
         embed = view.build_embed()
         if interaction.response.is_done():
             msg = await interaction.followup.send(embed=embed, view=view)
@@ -796,7 +850,7 @@ class FastGames(commands.Cog):
         view._register_stealth(cid, interaction.guild is None)
 
     async def open_tictactoe_room(self, interaction: discord.Interaction):
-        existing = room_manager.get_player_active_room(interaction.user.id, "tictactoe")
+        existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
                 f"⚠️ You are already in an active Tic-Tac-Toe room (`{existing.room_id}`).",
@@ -830,7 +884,7 @@ class FastGames(commands.Cog):
             pass
 
     async def open_closest_wins_room(self, interaction: discord.Interaction):
-        existing = room_manager.get_player_active_room(interaction.user.id, "closest_wins")
+        existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
                 f"⚠️ You are already in an active Closest Wins room (`{existing.room_id}`).",

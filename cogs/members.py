@@ -16,8 +16,9 @@ from core.config import (
     format_tz_label,
 )
 from core.database import db
+from core.rooms import room_manager
 from core.permissions import ensure_admin
-from core.ui import get_alliance_name, get_alliance_short, safe_reply_error, rof_embed
+from core.ui import PaginatedEmbedView, get_alliance_name, get_alliance_short, safe_reply_error, rof_embed
 
 
 # ==============================================================================
@@ -362,6 +363,10 @@ class Members(commands.Cog):
     async def on_member_remove(self, member: discord.Member):
         if GUILD_ID and member.guild.id != GUILD_ID:
             return
+        try:
+            await room_manager.remove_player_from_all_rooms(member.id)
+        except Exception as e:
+            print(f"[MEMBERS] room cleanup on_member_remove failed ({member.id}): {e}")
         # fix H: guarded config + guarded wipe.
         try:
             wipe_flag = (db.get_config("wipe_stats_on_leave", "false") or "false").lower()
@@ -384,12 +389,38 @@ class Members(commands.Cog):
 
     @rules_group.command(name="view", description="View the official Alliance rules")
     async def rules_view_cmd(self, interaction: discord.Interaction):
-        embed = rof_embed(
-            title=f"📜 {get_alliance_short()} ALLIANCE RULES",
-            description=_safe_rules_text(),
-            color=ROFColors.ARENA,
-        )
-        await interaction.response.send_message(embed=embed)
+        raw_rules = _safe_rules_text()
+        if len(raw_rules) <= 3900:
+            embed = rof_embed(
+                title=f"📜 {get_alliance_short()} ALLIANCE RULES",
+                description=raw_rules,
+                color=ROFColors.ARENA,
+            )
+            return await interaction.response.send_message(embed=embed)
+
+        # Safely split long rules into paginated embeds so Discord's 4096-char limit is never exceeded.
+        chunks, cur, cur_len = [], [], 0
+        for line in raw_rules.splitlines():
+            line = line[:3800]
+            if cur and cur_len + len(line) + 1 > 3800:
+                chunks.append("\n".join(cur))
+                cur, cur_len = [line], len(line)
+            else:
+                cur.append(line)
+                cur_len += len(line) + 1
+        if cur:
+            chunks.append("\n".join(cur))
+
+        pages = [
+            rof_embed(
+                title=f"📜 {get_alliance_short()} ALLIANCE RULES (Page {idx}/{len(chunks)})",
+                description=chunk,
+                color=ROFColors.ARENA,
+            )
+            for idx, chunk in enumerate(chunks, 1)
+        ]
+        view = PaginatedEmbedView(interaction.user.id, pages)
+        await interaction.response.send_message(embed=pages[0], view=view)
 
     @rules_group.command(name="add", description="Add a new alliance rule (Admin/Owner only)")
     @app_commands.describe(rule_text="The text of the new rule to add")

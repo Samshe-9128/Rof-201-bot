@@ -18,7 +18,7 @@ from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
 from core.config import BASE_DIR, OWNER_ID, ROFColors
 from core.database import db
-from core.ui import safe_defer, safe_edit_or_send, safe_reply_error
+from core.ui import BugReportModal, get_alliance_short, safe_defer, safe_edit_or_send, safe_reply_error
 
 load_dotenv()
 
@@ -69,10 +69,10 @@ def is_authorized(user_id):
 
 
 def evaluate_guess(guess, answer):
-    """Wordle scoring with correct repeated-letter handling."""
+    """Wordle scoring with correct repeated-letter handling (case-insensitive)."""
     result = [GREY] * 5
-    a = list(answer)
-    g = list(guess)
+    a = list(str(answer).strip().lower())
+    g = list(str(guess).strip().lower())
     for i in range(5):
         if g[i] == a[i]:
             result[i] = GREEN
@@ -129,12 +129,16 @@ class ShareResultView(discord.ui.View):
             print(f"[WORDLE] stats_button failed: {e}")
             await safe_reply_error(interaction, "⚠️ Could not load your Wordle stats right now.")
 
+    @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
+    async def report_bug_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BugReportModal("Wordle"))
+
 
 class WordleGameView(discord.ui.View):
     """Clean popular-bot Wordle controls — guesses are typed directly in chat!"""
 
     def __init__(self, cog: "Wordle", user_id: int, mode: str, channel_id: int):
-        super().__init__(timeout=900.0)
+        super().__init__(timeout=300.0)
         self.cog = cog
         self.user_id = user_id
         self.mode = mode
@@ -211,23 +215,20 @@ class Wordle(commands.Cog):
         board_message: Optional[discord.Message],
         view: WordleGameView,
     ) -> None:
-        self.active_boards[(channel_id, user_id)] = {
-            "message": board_message,
-            "mode": mode,
-            "view": view,
-        }
-
         async def _on_chat_message(message: discord.Message) -> bool:
             return await self._handle_chat_guess(message, user_id, mode)
 
         def _on_replace():
-            old = self.active_boards.pop((channel_id, user_id), None)
-            if old and old.get("view"):
-                try:
-                    old["view"].stop()
-                except Exception:
-                    pass
+            # Only clean up if this exact view is still the active board (never wipe a newly registered board!)
+            cur = self.active_boards.get((channel_id, user_id))
+            if cur and cur.get("view") is view:
+                self.active_boards.pop((channel_id, user_id), None)
+            try:
+                view.stop()
+            except Exception:
+                pass
 
+        # Register FIRST so any previous session's on_replace runs before we store the new board.
         chat_input_manager.register(
             session_id=self._session_id(channel_id, user_id),
             channel_id=channel_id,
@@ -237,6 +238,11 @@ class Wordle(commands.Cog):
             timeout_seconds=300.0,
             on_replace=_on_replace,
         )
+        self.active_boards[(channel_id, user_id)] = {
+            "message": board_message,
+            "mode": mode,
+            "view": view,
+        }
 
     # ---------- time ----------
 
@@ -417,6 +423,7 @@ class Wordle(commands.Cog):
     # ---------- game flow ----------
 
     async def start_game(self, interaction: discord.Interaction, mode: str, force_new: bool = False):
+        mode = (mode or "daily").strip().lower()
         if not self.answers:
             await safe_reply_error(interaction, "⚠️ Wordle is not set up (missing `wordle_answers.txt`).")
             return
@@ -492,6 +499,10 @@ class Wordle(commands.Cog):
                     pass
             await safe_defer(interaction, ephemeral=True)
 
+        if board_msg is not None and getattr(board_msg, "channel", None) is not None:
+            channel_id = board_msg.channel.id
+            if view is not None:
+                view.channel_id = channel_id
         if view is not None and channel_id:
             view.message = board_msg
             self._register_chat_session(channel_id, user_id, mode, board_msg, view)
@@ -572,7 +583,7 @@ class Wordle(commands.Cog):
 
             game['guesses'].append(low)
 
-            if low == game['answer']:
+            if low == str(game['answer']).strip().lower():
                 game['finished'] = True
                 game['won'] = True
                 self._update_stats_on_finish(user_id, mode, game, message.author.display_name)

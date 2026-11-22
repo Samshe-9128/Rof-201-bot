@@ -236,6 +236,26 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
             rules_text = "Alliance rules are currently unavailable. Please try again later."
         return (f"📜 {short} Alliance Rules", rules_text)
 
+    # 11. Help
+    if len(tokens) <= 4 and (tokens & {"help", "commands", "command"}):
+        tz_label = format_tz_label(tz_off)
+        return (
+            f"🛡️ {short} Bot Commands",
+            f"• `/games` — Open the {short} Gaming Arena\n"
+            f"• `/events` — View upcoming events in Game Time (`{tz_label}`) & India Time (`IST`)\n"
+            "• `/rules view` — View official alliance rules\n"
+            "• `/profile` & `/leaderboard` — Check player stats, match history, and rankings\n"
+            "• `/help` — Full command guide",
+        )
+
+    # 10. Greetings
+    if len(tokens) <= 4 and (tokens & {"hi", "hello", "hey", "yo", "hola", "sup"}):
+        return (
+            f"🛡️ {short} Alliance Assistant",
+            f"Hello warrior! Ask me about upcoming alliance events (e.g. *\"When is the next Surge?\"*), "
+            f"alliance rules, strategies, or how to play any {short} game — or use `/games`, `/events`, and `/help`.",
+        )
+
     # 9. Knowledge Base search — fix A
     try:
         kb_items = db.list_knowledge() or []
@@ -271,26 +291,6 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
         return (
             f"📘 {best_item.get('title', '?')} ({best_item.get('category', '?')})",
             best_item.get("content", ""),
-        )
-
-    # 10. Greetings
-    if tokens & {"hi", "hello", "hey", "yo", "hola", "sup"}:
-        return (
-            f"🛡️ {short} Alliance Assistant",
-            f"Hello warrior! Ask me about upcoming alliance events (e.g. *\"When is the next Surge?\"*), "
-            f"alliance rules, strategies, or how to play any {short} game — or use `/games`, `/events`, and `/help`.",
-        )
-
-    # 11. Help
-    if tokens & {"help", "commands", "command"}:
-        tz_label = format_tz_label(tz_off)
-        return (
-            f"🛡️ {short} Bot Commands",
-            f"• `/games` — Open the {short} Gaming Arena\n"
-            f"• `/events` — View upcoming events in Game Time (`{tz_label}`) & India Time (`IST`)\n"
-            "• `/rules view` — View official alliance rules\n"
-            "• `/profile` & `/leaderboard` — Check player stats, match history, and rankings\n"
-            "• `/help` — Full command guide",
         )
 
     # 12. Honest fallback

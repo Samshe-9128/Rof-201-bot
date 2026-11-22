@@ -13,7 +13,7 @@ from core.database import db
 from core.owner_stealth import owner_stealth
 from core.permissions import ensure_session_player
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import GameResultView, GameStartView, get_alliance_short, rof_embed, safe_edit_or_send, safe_reply_error
+from core.ui import BugReportModal, GameResultView, GameStartView, get_alliance_short, rof_embed, safe_edit_or_send, safe_reply_error
 
 
 # ---------- SINGLE-PLAYER REACTION SPEED TEST (SPEC 2.2 GAME 5) ----------
@@ -493,6 +493,10 @@ class ReactionRaceRematchView(discord.ui.View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
+    async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BugReportModal("QuickDraw Reaction Race"))
+
 
 class QuickDraw(commands.Cog):
     def __init__(self, bot):
@@ -550,7 +554,7 @@ class QuickDraw(commands.Cog):
                 pass
 
     async def open_reaction_race_room(self, interaction: discord.Interaction):
-        existing = room_manager.get_player_active_room(interaction.user.id, "reaction_race")
+        existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
                 f"⚠️ You are already in an active Reaction Race room (`{existing.room_id}`).",

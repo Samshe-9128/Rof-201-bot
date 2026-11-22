@@ -13,7 +13,7 @@ from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
-from core.ui import get_alliance_short, safe_edit_or_send, safe_reply_error, rof_embed
+from core.ui import BugReportModal, get_alliance_short, safe_edit_or_send, safe_reply_error, rof_embed
 
 
 def generate_secret_code(allow_repeats: bool = False) -> str:
@@ -527,6 +527,10 @@ class CodebreakerFinishedView(discord.ui.View):
         except Exception as e:
             print(f"[CODEBREAKER] close edit failed: {e}")
 
+    @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
+    async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BugReportModal("Codebreaker"))
+
 
 # ---------- PRESERVED 1v1 CLASSIC CHALLENGE MODAL & VIEW ----------
 
@@ -807,7 +811,7 @@ class Codebreaker(commands.Cog):
         allow_repeats: bool = False,
         min_players: int = 1,
     ):
-        existing = room_manager.get_player_active_room(interaction.user.id, "codebreaker")
+        existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
                 f"⚠️ You are already in an active Codebreaker room (`{existing.room_id}`).",

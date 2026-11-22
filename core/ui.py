@@ -1,8 +1,9 @@
 # core/ui.py
+import asyncio
 import traceback
 import discord
 from typing import Callable, List, Optional
-from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, ROFColors
+from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, OWNER_ID, ROFColors
 from core.database import db
 from core.permissions import ensure_session_player
 
@@ -50,18 +51,140 @@ def rof_embed(
     return embed
 
 
+def get_owner_contact_line() -> str:
+    """Return a clean owner-contact line tagging OWNER_ID (intended for private/ephemeral messages)."""
+    if OWNER_ID:
+        return f"🐛 *Found a bug or error in me? Contact the owner: <@{OWNER_ID}>*"
+    return "🐛 *Found a bug or error in me? Please contact the bot owner.*"
+
+
+class BugReportModal(discord.ui.Modal, title="🐛 Report a Bug to the Bot Owner"):
+    details = discord.ui.TextInput(
+        label="What bug or error did you find?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Describe what happened (only you and the bot owner will see this)...",
+        min_length=3,
+        max_length=1000,
+        required=True,
+    )
+
+    def __init__(self, context_label: str = "ROF Bot"):
+        super().__init__()
+        self.context_label = context_label
+
+    async def on_submit(self, interaction: discord.Interaction):
+        report_text = (self.details.value or "").strip()
+        owner_tag = f"<@{OWNER_ID}>" if OWNER_ID else "the bot owner"
+
+        # Privately DM the bot owner (only reporter + owner see this; never posted publicly)
+        dm_sent = False
+        if OWNER_ID:
+            client = getattr(interaction, "client", None)
+            if client is None:
+                try:
+                    import bot as _bot_mod
+                    client = getattr(_bot_mod, "bot", None)
+                except Exception:
+                    client = None
+            if client is not None:
+                try:
+                    owner_user = client.get_user(int(OWNER_ID)) or await client.fetch_user(int(OWNER_ID))
+                    if owner_user:
+                        where = (
+                            f"#{interaction.channel.name} ({interaction.guild.name})"
+                            if interaction.guild and interaction.channel
+                            else "Direct Message"
+                        )
+                        emb = rof_embed(
+                            title="🐛 PRIVATE BUG REPORT",
+                            description=report_text[:3500],
+                            color=ROFColors.WARNING,
+                            footer_extra=f"Context: {self.context_label}",
+                        )
+                        emb.add_field(
+                            name="Reported By",
+                            value=f"{interaction.user.mention} (`{interaction.user.display_name}` / `{interaction.user.id}`)",
+                            inline=True,
+                        )
+                        emb.add_field(name="Location", value=where, inline=True)
+                        await owner_user.send(embed=emb)
+                        dm_sent = True
+                except Exception:
+                    dm_sent = False
+
+        if dm_sent:
+            reply = (
+                f"✅ **Bug report sent privately to {owner_tag}!**\n"
+                f"Only you and {owner_tag} can see this report. You can also DM {owner_tag} directly anytime."
+            )
+        else:
+            reply = (
+                f"🐛 **Thanks for reporting!** Please contact the bot owner directly: {owner_tag}\n"
+                f"*(Only you can see this message.)*"
+            )
+        try:
+            await interaction.response.send_message(reply, ephemeral=True)
+        except Exception:
+            try:
+                await interaction.followup.send(reply, ephemeral=True)
+            except Exception:
+                pass
+
+
+class BugReportPromptView(discord.ui.View):
+    """Lightweight private button so a player can send a bug report directly to the Owner."""
+
+    def __init__(self, context_label: str = "ROF Bot", timeout: float = 300.0):
+        super().__init__(timeout=timeout)
+        self.context_label = context_label
+
+    @discord.ui.button(label="Report Bug to Owner", style=discord.ButtonStyle.secondary, emoji="🐛")
+    async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BugReportModal(self.context_label))
+
+
+async def send_private_bug_tip(
+    interaction: Optional[discord.Interaction],
+    context_label: str = "Game Session",
+) -> None:
+    """
+    Send a private (ephemeral) post-game message visible ONLY to the player,
+    tagging the Owner and offering a private 'Report Bug to Owner' button.
+    """
+    if interaction is None or not interaction.response.is_done():
+        return
+    try:
+        owner_tag = f"<@{OWNER_ID}>" if OWNER_ID else "the bot owner"
+        msg = (
+            f"🐛 Found any bug or error in me during **{context_label}**? "
+            f"Contact the owner {owner_tag} or click **Report Bug to Owner** below! *(Only you can see this.)*"
+        )
+        await interaction.followup.send(
+            msg,
+            view=BugReportPromptView(context_label),
+            ephemeral=True,
+        )
+    except Exception:
+        pass
+
+
 async def safe_reply_error(
     interaction: Optional[discord.Interaction],
     message: str = "⚠️ Something went wrong while running that action. Please try again.",
 ) -> None:
-    """Always send a visible ephemeral error so Discord never shows 'The application did not respond'."""
+    """Always send a visible ephemeral error (with private owner contact tag) so Discord never hangs."""
     if interaction is None:
         return
+    contact_line = get_owner_contact_line()
+    full_msg = message if "Contact the owner:" in message else f"{message}\n{contact_line}"
+    if len(full_msg) > 1990:
+        full_msg = full_msg[:1990]
+    view = BugReportPromptView("Bot Error")
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
+            await interaction.followup.send(full_msg, view=view, ephemeral=True)
         else:
-            await interaction.response.send_message(message, ephemeral=True)
+            await interaction.response.send_message(full_msg, view=view, ephemeral=True)
     except Exception:
         pass
 
@@ -157,6 +280,8 @@ class GameStartView(discord.ui.View):
         self.start_callback = start_callback
         self.selected_difficulty = default_difficulty
         self.message: Optional[discord.Message] = None
+        self._started = False
+        self._lock = asyncio.Lock()
 
         if difficulties:
             options = [
@@ -203,7 +328,11 @@ class GameStartView(discord.ui.View):
     async def start_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await ensure_session_player(interaction, self.user.id, "start this game"):
             return
-        self.stop()
+        async with self._lock:
+            if self._started:
+                return await safe_defer(interaction, ephemeral=True)
+            self._started = True
+            self.stop()
         try:
             await self.start_callback(interaction, self.selected_difficulty.lower())
         except Exception as e:
@@ -258,12 +387,18 @@ class GameResultView(discord.ui.View):
         self.user = user
         self.game_name = game_name
         self.play_again_callback = play_again_callback
+        self._started = False
+        self._lock = asyncio.Lock()
 
     @discord.ui.button(label="Play Again", style=discord.ButtonStyle.success, emoji="🔄")
     async def play_again_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await ensure_session_player(interaction, self.user.id, "start a rematch"):
             return
-        self.stop()
+        async with self._lock:
+            if self._started:
+                return await safe_defer(interaction, ephemeral=True)
+            self._started = True
+            self.stop()
         try:
             await self.play_again_callback(interaction)
         except Exception as e:
@@ -307,6 +442,10 @@ class GameResultView(discord.ui.View):
             await interaction.response.edit_message(view=self)
         except Exception:
             await safe_defer(interaction, ephemeral=True)
+
+    @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
+    async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BugReportModal(self.game_name))
 
 
 class PaginatedEmbedView(discord.ui.View):

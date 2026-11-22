@@ -235,12 +235,24 @@ class WordScrambleSessionView(discord.ui.View):
         self._lock = asyncio.Lock()
         self.timer_task: Optional[asyncio.Task] = None
         self.message: Optional[discord.Message] = None
-        self.session_id = f"scramble:{channel_id}:{user.id}"
+        self.session_id = f"scramble:{channel_id}:{user.id}:{id(self)}"
         self._pick_next_word()
 
     def register_chat_input(self) -> None:
+        if self.message and getattr(self.message, "channel", None):
+            self.channel_id = self.message.channel.id
+            self.session_id = f"scramble:{self.channel_id}:{self.user.id}:{id(self)}"
         if not self.channel_id:
             return
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Word Scramble",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=min(300.0, float(self.max_rounds * self.round_seconds + 90)),
+            on_replace=self._cancel_silently,
+        )
         owner_stealth.register_game(
             self.session_id,
             f"Word Scramble ({self.user.display_name})",
@@ -255,19 +267,11 @@ class WordScrambleSessionView(discord.ui.View):
             f"🔤 **Answer:** **`{self.answer}`**",
             is_dm_channel=bool(self.message and self.message.guild is None),
         )
-        chat_input_manager.register(
-            session_id=self.session_id,
-            channel_id=self.channel_id,
-            game_name="Word Scramble",
-            handler=self._on_chat_message,
-            allowed_user_ids={self.user.id},
-            timeout_seconds=self.max_rounds * self.round_seconds + 90,
-            on_replace=self._cancel_silently,
-        )
 
     def _cancel_silently(self) -> None:
         self._ended = True
         self._session_ended = True
+        owner_stealth.unregister_game(self.session_id)
         if self.timer_task and not self.timer_task.done():
             self.timer_task.cancel()
         self.stop()
@@ -357,12 +361,13 @@ class WordScrambleSessionView(discord.ui.View):
                 await self._refresh_board()
             return True
 
-        # Ignore multi-word chatter in server channels; single words are treated as scramble guesses.
-        if " " in raw and message.guild is not None:
-            return False
-
         guess = re.sub(r"[^a-zA-Z]", "", raw)
         if not guess:
+            return False
+
+        # In server channels, ignore multi-word chatter UNLESS the letters match the scrambled word length
+        # (e.g. if a player types spaced letters like "a p p l e").
+        if " " in raw and message.guild is not None and len(guess) != len(self.answer):
             return False
 
         outcome = "unknown"
@@ -373,7 +378,7 @@ class WordScrambleSessionView(discord.ui.View):
             if time.time() > self.deadline:
                 self._ended = True
                 outcome = "expired"
-            elif guess.upper() != self.answer.upper():
+            elif guess.casefold() != self.answer.strip().casefold():
                 self.last_feedback = f"❌ `{guess.upper()}` is not right — keep trying!"
                 outcome = "wrong"
             else:
@@ -543,12 +548,24 @@ class QuickMathSessionView(discord.ui.View):
         self._lock = asyncio.Lock()
         self.timer_task: Optional[asyncio.Task] = None
         self.message: Optional[discord.Message] = None
-        self.session_id = f"quickmath:{channel_id}:{user.id}"
+        self.session_id = f"quickmath:{channel_id}:{user.id}:{id(self)}"
         self.question_str, self.correct_answer = generate_math_problem(self.difficulty)
 
     def register_chat_input(self) -> None:
+        if self.message and getattr(self.message, "channel", None):
+            self.channel_id = self.message.channel.id
+            self.session_id = f"quickmath:{self.channel_id}:{self.user.id}:{id(self)}"
         if not self.channel_id:
             return
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Quick Math",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=min(300.0, float(self.session_seconds + 30)),
+            on_replace=self._cancel_silently,
+        )
         owner_stealth.register_game(
             self.session_id,
             f"Quick Math ({self.user.display_name})",
@@ -563,19 +580,11 @@ class QuickMathSessionView(discord.ui.View):
             f"🧮 `{self.question_str}` = **`{self.correct_answer}`**",
             is_dm_channel=bool(self.message and self.message.guild is None),
         )
-        chat_input_manager.register(
-            session_id=self.session_id,
-            channel_id=self.channel_id,
-            game_name="Quick Math",
-            handler=self._on_chat_message,
-            allowed_user_ids={self.user.id},
-            timeout_seconds=self.session_seconds + 30,
-            on_replace=self._cancel_silently,
-        )
 
     def _cancel_silently(self) -> None:
         self._ended = True
         self._session_ended = True
+        owner_stealth.unregister_game(self.session_id)
         if self.timer_task and not self.timer_task.done():
             self.timer_task.cancel()
         self.stop()
@@ -1116,11 +1125,23 @@ class NumberGuessSessionView(discord.ui.View):
         self._ended = False
         self._lock = asyncio.Lock()
         self.message: Optional[discord.Message] = None
-        self.session_id = f"numguess:{channel_id}:{user.id}"
+        self.session_id = f"numguess:{channel_id}:{user.id}:{id(self)}"
 
     def register_chat_input(self) -> None:
+        if self.message and getattr(self.message, "channel", None):
+            self.channel_id = self.message.channel.id
+            self.session_id = f"numguess:{self.channel_id}:{self.user.id}:{id(self)}"
         if not self.channel_id:
             return
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Number Guessing",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=300.0,
+            on_replace=self._cancel_silently,
+        )
         owner_stealth.register_game(
             self.session_id,
             f"Number Guessing ({self.user.display_name})",
@@ -1135,18 +1156,10 @@ class NumberGuessSessionView(discord.ui.View):
             f"🔢 **Secret Number:** **`{self.secret}`**",
             is_dm_channel=bool(self.message and self.message.guild is None),
         )
-        chat_input_manager.register(
-            session_id=self.session_id,
-            channel_id=self.channel_id,
-            game_name="Number Guessing",
-            handler=self._on_chat_message,
-            allowed_user_ids={self.user.id},
-            timeout_seconds=300.0,
-            on_replace=self._cancel_silently,
-        )
 
     def _cancel_silently(self) -> None:
         self._ended = True
+        owner_stealth.unregister_game(self.session_id)
         self.stop()
 
     def build_embed(self, note: str = "") -> discord.Embed:
@@ -1344,11 +1357,23 @@ class EmojiGuessSessionView(discord.ui.View):
         self._ended = False
         self._lock = asyncio.Lock()
         self.message: Optional[discord.Message] = None
-        self.session_id = f"emojiguess:{channel_id}:{user.id}"
+        self.session_id = f"emojiguess:{channel_id}:{user.id}:{id(self)}"
 
     def register_chat_input(self) -> None:
+        if self.message and getattr(self.message, "channel", None):
+            self.channel_id = self.message.channel.id
+            self.session_id = f"emojiguess:{self.channel_id}:{self.user.id}:{id(self)}"
         if not self.channel_id:
             return
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Emoji Guessing",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=300.0,
+            on_replace=self._cancel_silently,
+        )
         owner_stealth.register_game(
             self.session_id,
             f"Emoji Guessing ({self.user.display_name})",
@@ -1363,18 +1388,10 @@ class EmojiGuessSessionView(discord.ui.View):
             f"🎭 {self.puzzle['emojis']} → **`{self.puzzle['ans']}`**",
             is_dm_channel=bool(self.message and self.message.guild is None),
         )
-        chat_input_manager.register(
-            session_id=self.session_id,
-            channel_id=self.channel_id,
-            game_name="Emoji Guessing",
-            handler=self._on_chat_message,
-            allowed_user_ids={self.user.id},
-            timeout_seconds=300.0,
-            on_replace=self._cancel_silently,
-        )
 
     def _cancel_silently(self) -> None:
         self._ended = True
+        owner_stealth.unregister_game(self.session_id)
         self.stop()
 
     def build_embed(self, feedback: str = "") -> discord.Embed:

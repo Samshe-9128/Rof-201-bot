@@ -22,7 +22,7 @@ from core.database import db
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import get_alliance_short, safe_reply_error, rof_embed
+from core.ui import BugReportModal, get_alliance_short, safe_reply_error, rof_embed
 
 
 # ==============================================================================
@@ -975,6 +975,10 @@ class MultiRematchView(discord.ui.View):
         except Exception as e:
             print(f"[MULTI] close edit failed: {e}")
 
+    @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
+    async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BugReportModal(self.mode))
+
 
 class MultiplayerGames(commands.Cog):
     def __init__(self, bot):
@@ -1007,7 +1011,7 @@ class MultiplayerGames(commands.Cog):
         }
         title, min_p, max_p, desc = meta.get(mode, meta["word_race"])
 
-        existing = room_manager.get_player_active_room(interaction.user.id, mode)
+        existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
                 f"⚠️ You are already in an active **{title}** room (`{existing.room_id}`).",

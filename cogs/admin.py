@@ -253,17 +253,31 @@ class Admin(commands.Cog):
                 admin_lines.append(f"🛡️ **Admin:** <@{a['target_id']}> (`{a['target_id']}`)")
 
         logs = db.get_audit_logs(limit=8)
-        log_lines = [
-            f"• `{l['created_at']}` — <@{l['actor_id']}>: **{l['action']}** ({l['details']})"
-            for l in logs
-        ] or ["*No administrative actions logged yet.*"]
+        log_lines = []
+        total_len = 0
+        for l in logs:
+            detail_str = str(l.get("details") or "")
+            if len(detail_str) > 80:
+                detail_str = detail_str[:77] + "..."
+            line = f"• `{l['created_at']}` — <@{l['actor_id']}>: **{l['action']}** ({detail_str})"
+            if total_len + len(line) + 1 > 980:
+                log_lines.append("• *...older entries truncated*")
+                break
+            log_lines.append(line)
+            total_len += len(line) + 1
+        if not log_lines:
+            log_lines = ["*No administrative actions logged yet.*"]
+
+        desc_text = "\n".join(admin_lines)
+        if len(desc_text) > 3900:
+            desc_text = desc_text[:3897] + "..."
 
         embed = rof_embed(
             title=f"🔐 {get_alliance_short()} SECURITY & PERMISSIONS CENTER",
-            description="\n".join(admin_lines),
+            description=desc_text,
             color=ROFColors.GOLD,
         )
-        embed.add_field(name="📋 Recent Administrative Audit Logs", value="\n".join(log_lines), inline=False)
+        embed.add_field(name="📋 Recent Administrative Audit Logs", value="\n".join(log_lines)[:1024], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

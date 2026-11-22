@@ -88,14 +88,16 @@ class ChatInputManager:
         """
         self._purge_expired()
 
-        # Replace any existing solo session for the same user in the same channel
-        if allowed_user_ids and len(allowed_user_ids) == 1:
-            uid = next(iter(allowed_user_ids))
+        # Replace any existing solo session for participating user(s) in the same channel
+        # so solo games (e.g. Wordle) never collide with a newly started solo OR multiplayer chat game.
+        if allowed_user_ids:
             for old_id, old_sess in list(self._sessions.items()):
                 if (
                     old_id != session_id
                     and old_sess.channel_id == channel_id
-                    and old_sess.allowed_user_ids == {uid}
+                    and old_sess.allowed_user_ids is not None
+                    and len(old_sess.allowed_user_ids) == 1
+                    and next(iter(old_sess.allowed_user_ids)) in allowed_user_ids
                 ):
                     self._sessions.pop(old_id, None)
                     if old_sess.on_replace:
@@ -168,8 +170,9 @@ class ChatInputManager:
         if not sessions:
             return False
 
-        # Mark early so concurrent DMHandler listeners never treat an active game input as an assistant query.
-        self.mark_consumed(message.id)
+        # In DMs, mark early so concurrent DMHandler listeners never hijack an active game input.
+        if message.guild is None:
+            self.mark_consumed(message.id)
 
         for sess in sessions:
             if not sess.matches(message):
@@ -177,6 +180,7 @@ class ChatInputManager:
             try:
                 consumed = await sess.handler(message)
                 if consumed:
+                    self.mark_consumed(message.id)
                     return True
             except Exception as e:
                 print(

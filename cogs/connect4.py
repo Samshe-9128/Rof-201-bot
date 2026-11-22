@@ -10,7 +10,7 @@ from core.config import ROFColors
 from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.owner_stealth import best_connect4_col, owner_stealth
-from core.ui import get_alliance_short, rof_embed
+from core.ui import get_alliance_short, rof_embed, send_private_bug_tip
 
 EMPTY_CELL = "⚫"
 P1_TOKEN = "🔴"
@@ -44,6 +44,15 @@ class Connect4View(discord.ui.View):
             )
             btn.callback = self._make_col_cb(c)
             self.add_item(btn)
+
+        forfeit_btn = discord.ui.Button(
+            label="Forfeit",
+            emoji="🏳️",
+            style=discord.ButtonStyle.danger,
+            row=1,
+        )
+        forfeit_btn.callback = self._on_forfeit
+        self.add_item(forfeit_btn)
 
     # ---------- rendering ----------
 
@@ -223,6 +232,7 @@ class Connect4View(discord.ui.View):
 
                     self._record_result(winner, loser)
                     self._close_room()
+                    await send_private_bug_tip(interaction, "Connect 4")
                     return
 
                 # ------ draw path ------
@@ -256,6 +266,32 @@ class Connect4View(discord.ui.View):
 
         return _cb
 
+    async def _on_forfeit(self, interaction: discord.Interaction):
+        if interaction.user.id not in (self.p1.id, self.p2.id):
+            return await interaction.response.send_message("You are not in this match!", ephemeral=True)
+        async with self._lock:
+            if self.finished:
+                return await interaction.response.send_message("ℹ️ This match has already ended.", ephemeral=True)
+            self.finished = True
+            self.stop()
+            self._disable_all()
+            loser = interaction.user
+            winner = self.p2 if loser.id == self.p1.id else self.p1
+            try:
+                await interaction.response.edit_message(
+                    embed=self.build_embed(f"🏳️ **{loser.mention} forfeited!** 🏆 {winner.mention} wins!"),
+                    view=self,
+                )
+            except Exception:
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(f"🏳️ {loser.mention} forfeited Connect 4.", ephemeral=True)
+                except Exception:
+                    pass
+            if self.moves > 0:
+                self._record_result(winner, loser)
+            self._close_room()
+
     # ---------- timeout ----------
 
     async def on_timeout(self):
@@ -285,10 +321,10 @@ class Connect4(commands.Cog):
         self.bot = bot
 
     async def open_connect4_room(self, interaction: discord.Interaction):
-        existing = room_manager.get_player_active_room(interaction.user.id, "connect4")
+        existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
-                f"⚠️ You are already in an active Connect 4 room (`{existing.room_id}`).",
+                f"⚠️ You are already in an active **{existing.game_title}** room (`{existing.room_id}`). Leave or finish that room first!",
                 ephemeral=True,
             )
 
