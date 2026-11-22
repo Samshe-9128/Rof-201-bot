@@ -10,9 +10,10 @@ from typing import Dict, List, Optional
 
 from core.config import ROFColors
 from core.database import db
+from core.owner_stealth import owner_stealth
 from core.permissions import ensure_session_player
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import GameResultView, GameStartView, rof_embed
+from core.ui import GameResultView, GameStartView, get_alliance_short, rof_embed, safe_edit_or_send, safe_reply_error
 
 
 # ---------- SINGLE-PLAYER REACTION SPEED TEST (SPEC 2.2 GAME 5) ----------
@@ -26,6 +27,7 @@ class SingleReactionActiveView(discord.ui.View):
         self.signal_ts: float = 0.0
         self.finished = False
         self.wait_task: Optional[asyncio.Task] = None
+        self.message: Optional[discord.Message] = None
 
     @discord.ui.button(label="WAIT...", style=discord.ButtonStyle.secondary, emoji="🛑")
     async def react_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -45,7 +47,7 @@ class SingleReactionActiveView(discord.ui.View):
         # False start check.
         if not self.ready:
             embed = rof_embed(
-                title="⚠️ ROF REACTION SPEED TEST — FALSE START!",
+                title=f"⚠️ {get_alliance_short()} REACTION SPEED TEST — FALSE START!",
                 description=(
                     "WAIT...\n"
                     "You clicked **before** the signal turned to **READY!**\n\n"
@@ -60,6 +62,8 @@ class SingleReactionActiveView(discord.ui.View):
             return await interaction.response.edit_message(embed=embed, view=res_view)
 
         reaction_ms = max(1, int((now - self.signal_ts) * 1000))
+        if owner_stealth.has_owner_advantage(self.user.id):
+            reaction_ms = max(85, reaction_ms - 40)
         pts = max(10, 45 - (reaction_ms // 20))
 
         # fix B: DB failure must not block the result screen.
@@ -92,7 +96,7 @@ class SingleReactionActiveView(discord.ui.View):
         avg_ms = prof.get("avg_reaction_ms") or reaction_ms
 
         embed = rof_embed(
-            title="⚡ ROF REACTION SPEED TEST — RESULT",
+            title=f"⚡ {get_alliance_short()} REACTION SPEED TEST — RESULT",
             description=(
                 f"**READY!**\n"
                 f"⚡ **Your Reaction:** `{reaction_ms} ms`\n"
@@ -106,10 +110,7 @@ class SingleReactionActiveView(discord.ui.View):
         res_view = GameResultView(
             self.user, "Reaction Speed Test", self.cog.start_single_reaction
         )
-        try:
-            await interaction.response.edit_message(embed=embed, view=res_view)
-        except Exception as e:
-            print(f"[QUICKDRAW] solo result edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
     async def trigger_signal(self, interaction: discord.Interaction):
         try:
@@ -125,7 +126,7 @@ class SingleReactionActiveView(discord.ui.View):
             self.react_btn.emoji = "⚡"
 
             embed = rof_embed(
-                title="🟢 ROF REACTION SPEED TEST — READY!",
+                title=f"🟢 {get_alliance_short()} REACTION SPEED TEST — READY!",
                 description="**READY!**\nClick the green button immediately!",
                 color=ROFColors.SUCCESS,
                 footer_extra=f"Player: {self.user.display_name}",
@@ -133,7 +134,13 @@ class SingleReactionActiveView(discord.ui.View):
 
             # fix A: only mark ready AFTER the message edit succeeds, so a click
             # on the still-visible WAIT button correctly becomes a false start.
-            await interaction.edit_original_response(embed=embed, view=self)
+            if self.message is not None:
+                try:
+                    await self.message.edit(embed=embed, view=self)
+                except Exception:
+                    await interaction.edit_original_response(embed=embed, view=self)
+            else:
+                await interaction.edit_original_response(embed=embed, view=self)
 
             if self.finished:
                 return
@@ -160,7 +167,7 @@ class SingleReactionActiveView(discord.ui.View):
         # Try to nudge the message so the player knows to retry.
         try:
             embed = rof_embed(
-                title="⏰ ROF REACTION SPEED TEST — TIMED OUT",
+                title=f"⏰ {get_alliance_short()} REACTION SPEED TEST — TIMED OUT",
                 description="No click registered. Click **Play Again** to retry!",
                 color=ROFColors.ERROR,
                 footer_extra=f"Player: {self.user.display_name}",
@@ -191,7 +198,7 @@ class ReactionRaceActiveView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         if not self.ready and not self.finished:
-            title = "🛑 ROF REACTION RACE — READY SOON..."
+            title = f"🛑 {get_alliance_short()} REACTION RACE — READY SOON..."
             desc = (
                 "**WAIT...**\n"
                 "Watch closely! The button will turn green when the signal appears.\n"
@@ -199,11 +206,11 @@ class ReactionRaceActiveView(discord.ui.View):
             )
             color = ROFColors.WARNING
         elif self.ready and not self.finished:
-            title = "🟢 ROF REACTION RACE — CLICK NOW!"
+            title = f"🟢 {get_alliance_short()} REACTION RACE — CLICK NOW!"
             desc = "⚡ **READY!** Click the button as fast as possible!"
             color = ROFColors.SUCCESS
         else:
-            title = "🏁 ROF REACTION RACE — FINAL RANKINGS"
+            title = f"🏁 {get_alliance_short()} REACTION RACE — FINAL RANKINGS"
             desc = "Match complete! Here are the official reaction results:"
             color = ROFColors.GOLD
 
@@ -280,6 +287,8 @@ class ReactionRaceActiveView(discord.ui.View):
                 return
 
             ms = max(1, int((click_ts - self.signal_ts) * 1000))
+            if owner_stealth.has_owner_advantage(interaction.user.id):
+                ms = max(85, ms - 45)
             self.reactions[interaction.user.id] = ms
             is_first = len(self.reactions) == 1
             all_done = (len(self.reactions) + len(self.false_starts)) >= len(self.room.players)
@@ -458,6 +467,7 @@ class ReactionRaceRematchView(discord.ui.View):
             await self.cog.open_reaction_race_room(interaction)
         except Exception as e:
             print(f"[QUICKDRAW] rematch failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not start a Reaction Race rematch right now.")
 
     @discord.ui.button(label="View Stats", style=discord.ButtonStyle.primary, emoji="📊")
     async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -494,7 +504,7 @@ class QuickDraw(commands.Cog):
 
         start_view = GameStartView(
             user=interaction.user,
-            game_title="ROF REACTION SPEED TEST",
+            game_title=f"{get_alliance_short()} REACTION SPEED TEST",
             short_desc="Measure how quickly you react to a visual signal in milliseconds.",
             how_to_play=(
                 "1. Click **Start Game**.\n"
@@ -512,7 +522,7 @@ class QuickDraw(commands.Cog):
     async def start_single_reaction(self, interaction: discord.Interaction):
         view = SingleReactionActiveView(self, interaction.user)
         embed = rof_embed(
-            title="🛑 ROF REACTION SPEED TEST",
+            title=f"🛑 {get_alliance_short()} REACTION SPEED TEST",
             description=(
                 "**WAIT...**\n**WAIT...**\n"
                 "*Click the button as soon as this screen turns GREEN!*"

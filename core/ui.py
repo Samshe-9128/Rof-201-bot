@@ -1,9 +1,37 @@
 # core/ui.py
+import traceback
 import discord
 from typing import Callable, List, Optional
-from core.config import BRAND_FOOTER, ROFColors
+from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, ROFColors
 from core.database import db
 from core.permissions import ensure_session_player
+
+
+def get_alliance_short() -> str:
+    try:
+        val = db.get_config("alliance_short", BRAND_SHORT)
+        return (val or BRAND_SHORT).strip()
+    except Exception:
+        return BRAND_SHORT
+
+
+def get_alliance_name() -> str:
+    try:
+        val = db.get_config("alliance_name", BRAND_NAME)
+        return (val or BRAND_NAME).strip()
+    except Exception:
+        return BRAND_NAME
+
+
+def get_alliance_footer() -> str:
+    try:
+        custom = db.get_config("alliance_footer", "")
+        if custom and custom.strip():
+            return custom.strip()
+        short = get_alliance_short()
+        return f"{short} Gaming & Alliance System"
+    except Exception:
+        return BRAND_FOOTER
 
 
 def rof_embed(
@@ -14,11 +42,95 @@ def rof_embed(
     thumbnail_url: Optional[str] = None,
 ) -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=color)
-    footer = f"{BRAND_FOOTER} • {footer_extra}" if footer_extra else BRAND_FOOTER
+    base_footer = get_alliance_footer()
+    footer = f"{base_footer} • {footer_extra}" if footer_extra else base_footer
     embed.set_footer(text=footer)
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
     return embed
+
+
+async def safe_reply_error(
+    interaction: Optional[discord.Interaction],
+    message: str = "⚠️ Something went wrong while running that action. Please try again.",
+) -> None:
+    """Always send a visible ephemeral error so Discord never shows 'The application did not respond'."""
+    if interaction is None:
+        return
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception:
+        pass
+
+
+async def safe_defer(interaction: Optional[discord.Interaction], ephemeral: bool = False) -> None:
+    """Safely acknowledge an interaction if it hasn't been responded to yet."""
+    if interaction is None:
+        return
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+    except Exception:
+        pass
+
+
+async def safe_edit_or_send(
+    interaction: Optional[discord.Interaction],
+    *,
+    embed: Optional[discord.Embed] = None,
+    view: Optional[discord.ui.View] = None,
+    content: Optional[str] = None,
+    ephemeral: bool = False,
+    fallback_message: Optional[discord.Message] = None,
+) -> Optional[discord.Message]:
+    """
+    Reliably update an interaction message or send a fresh one without ever leaving
+    the interaction unacknowledged ('The application did not respond').
+    """
+    kwargs = {}
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+    if view is not None:
+        kwargs["view"] = view
+
+    if interaction is not None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(**kwargs)
+                return interaction.message
+        except Exception:
+            pass
+
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(**kwargs, ephemeral=ephemeral)
+                try:
+                    return await interaction.original_response()
+                except Exception:
+                    return None
+            else:
+                return await interaction.followup.send(**kwargs, ephemeral=ephemeral, wait=True)
+        except Exception:
+            pass
+
+    if fallback_message is not None:
+        try:
+            await fallback_message.edit(**kwargs)
+            return fallback_message
+        except Exception:
+            pass
+
+    if interaction is not None and interaction.channel is not None:
+        try:
+            return await interaction.channel.send(**kwargs)
+        except Exception:
+            pass
+    return None
 
 
 class GameStartView(discord.ui.View):
@@ -34,7 +146,7 @@ class GameStartView(discord.ui.View):
         start_callback: Callable,
         difficulties: Optional[List[str]] = None,
         default_difficulty: str = "Medium",
-        timeout: float = 180.0,
+        timeout: float = 300.0,
     ):
         super().__init__(timeout=timeout)
         self.user = user
@@ -44,6 +156,7 @@ class GameStartView(discord.ui.View):
         self.timer_info = timer_info
         self.start_callback = start_callback
         self.selected_difficulty = default_difficulty
+        self.message: Optional[discord.Message] = None
 
         if difficulties:
             options = [
@@ -68,7 +181,10 @@ class GameStartView(discord.ui.View):
         self.selected_difficulty = self.diff_select.values[0].capitalize()
         for opt in self.diff_select.options:
             opt.default = opt.value == self.diff_select.values[0]
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        try:
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        except Exception:
+            await safe_reply_error(interaction, "⚠️ Could not update difficulty. Please try again.")
 
     def build_embed(self) -> discord.Embed:
         embed = rof_embed(
@@ -88,7 +204,12 @@ class GameStartView(discord.ui.View):
         if not await ensure_session_player(interaction, self.user.id, "start this game"):
             return
         self.stop()
-        await self.start_callback(interaction, self.selected_difficulty.lower())
+        try:
+            await self.start_callback(interaction, self.selected_difficulty.lower())
+        except Exception as e:
+            print(f"[UI] GameStartView start_callback error ({self.game_title}): {type(e).__name__}: {e}")
+            traceback.print_exc()
+            await safe_reply_error(interaction, "⚠️ Could not start the game right now. Please try again.")
 
     @discord.ui.button(label="How to Play", style=discord.ButtonStyle.secondary, emoji="ℹ️", row=1)
     async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -108,7 +229,19 @@ class GameStartView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         embed = rof_embed(title=f"🎮 {self.game_title}", description="*Session closed.*", color=ROFColors.PRIMARY)
-        await interaction.response.edit_message(embed=embed, view=self)
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except Exception:
+            await safe_defer(interaction, ephemeral=True)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
 
 class GameResultView(discord.ui.View):
@@ -119,7 +252,7 @@ class GameResultView(discord.ui.View):
         user: discord.abc.User,
         game_name: str,
         play_again_callback: Callable,
-        timeout: float = 180.0,
+        timeout: float = 300.0,
     ):
         super().__init__(timeout=timeout)
         self.user = user
@@ -131,28 +264,37 @@ class GameResultView(discord.ui.View):
         if not await ensure_session_player(interaction, self.user.id, "start a rematch"):
             return
         self.stop()
-        await self.play_again_callback(interaction)
+        try:
+            await self.play_again_callback(interaction)
+        except Exception as e:
+            print(f"[UI] GameResultView play_again error ({self.game_name}): {type(e).__name__}: {e}")
+            traceback.print_exc()
+            await safe_reply_error(interaction, "⚠️ Could not start a new game right now. Please try `/games`.")
 
     @discord.ui.button(label="View Stats", style=discord.ButtonStyle.primary, emoji="📊")
     async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        prof = db.get_player_profile(interaction.user.id)
-        gstat = prof["game_stats"].get(self.game_name, {})
-        embed = rof_embed(
-            title=f"📊 {interaction.user.display_name} — {self.game_name} Statistics",
-            color=ROFColors.ARENA,
-            thumbnail_url=interaction.user.display_avatar.url if hasattr(interaction.user, "display_avatar") else None,
-        )
-        embed.add_field(name="Games Played", value=f"**{gstat.get('played', 0)}**", inline=True)
-        embed.add_field(name="Wins", value=f"**{gstat.get('wins', 0)}**", inline=True)
-        embed.add_field(name="Best Score", value=f"**{gstat.get('best_score', 0)}**", inline=True)
-        if gstat.get("best_reaction_ms") is not None:
-            embed.add_field(name="Best Reaction", value=f"**{gstat['best_reaction_ms']} ms**", inline=True)
-        embed.add_field(
-            name="Overall Profile",
-            value=f"Total Points: **{prof['points']}** | Overall Win Rate: **{prof['win_rate']}%**",
-            inline=False,
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            prof = db.get_player_profile(interaction.user.id)
+            gstat = prof["game_stats"].get(self.game_name, {})
+            embed = rof_embed(
+                title=f"📊 {interaction.user.display_name} — {self.game_name} Statistics",
+                color=ROFColors.ARENA,
+                thumbnail_url=interaction.user.display_avatar.url if hasattr(interaction.user, "display_avatar") else None,
+            )
+            embed.add_field(name="Games Played", value=f"**{gstat.get('played', 0)}**", inline=True)
+            embed.add_field(name="Wins", value=f"**{gstat.get('wins', 0)}**", inline=True)
+            embed.add_field(name="Best Score", value=f"**{gstat.get('best_score', 0)}**", inline=True)
+            if gstat.get("best_reaction_ms") is not None:
+                embed.add_field(name="Best Reaction", value=f"**{gstat['best_reaction_ms']} ms**", inline=True)
+            embed.add_field(
+                name="Overall Profile",
+                value=f"Total Points: **{prof['points']}** | Overall Win Rate: **{prof['win_rate']}%**",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            print(f"[UI] GameResultView stats error: {type(e).__name__}: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not load your stats right now.")
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -164,13 +306,13 @@ class GameResultView(discord.ui.View):
         try:
             await interaction.response.edit_message(view=self)
         except Exception:
-            pass
+            await safe_defer(interaction, ephemeral=True)
 
 
 class PaginatedEmbedView(discord.ui.View):
     """Reusable pagination control for events, leaderboards, and knowledge lists."""
 
-    def __init__(self, user_id: int, pages: List[discord.Embed], timeout: float = 180.0):
+    def __init__(self, user_id: int, pages: List[discord.Embed], timeout: float = 300.0):
         super().__init__(timeout=timeout)
         self.user_id = user_id
         self.pages = pages
@@ -203,23 +345,8 @@ class PaginatedEmbedView(discord.ui.View):
         await interaction.response.edit_message(embed=self.pages[self.index], view=self)
 
 
-async def safe_reply_error(
-    interaction: discord.Interaction,
-    message: str = "⚠️ Something went wrong while running that action. Please try again.",
-) -> None:
-    """Always send a visible ephemeral error so Discord never shows 'The application did not respond'."""
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-    except Exception:
-        pass
-
-
 def install_global_ui_error_handlers() -> None:
     """Ensure every View (Buttons/Selects) and Modal replies cleanly if an unexpected error occurs."""
-    import traceback
     from core.logger import log
 
     async def _view_on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):

@@ -9,7 +9,8 @@ from discord.ext import commands
 from core.config import ROFColors
 from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import rof_embed
+from core.owner_stealth import best_connect4_col, owner_stealth
+from core.ui import get_alliance_short, rof_embed
 
 EMPTY_CELL = "⚫"
 P1_TOKEN = "🔴"
@@ -68,7 +69,7 @@ class Connect4View(discord.ui.View):
             f"{self._render_board()}"
         )
         return rof_embed(
-            title="🔴 ROF CONNECT 4",
+            title=f"🔴 {get_alliance_short()} CONNECT 4",
             description=desc,
             color=ROFColors.GOLD if self.finished else ROFColors.ARENA,
             footer_extra=f"Room {self.room.room_id}",
@@ -131,6 +132,7 @@ class Connect4View(discord.ui.View):
                 print(f"[CONNECT4] draw record failed ({p.id}): {e}")
 
     def _close_room(self):
+        owner_stealth.unregister_game(f"c4:{self.room.room_id}")
         # fix G: close_room is unlikely to fail but never let it wedge the caller.
         try:
             self.room.status = "finished"
@@ -261,6 +263,7 @@ class Connect4View(discord.ui.View):
         if self.finished:
             return
         self.finished = True
+        owner_stealth.unregister_game(f"c4:{self.room.room_id}")
         self._disable_all()
         self._close_room()
 
@@ -304,6 +307,15 @@ class Connect4(commands.Cog):
                     embed=view.build_embed(), view=view
                 )
                 active_room.message = start_inter.message
+                cid = start_inter.channel_id or (start_inter.channel.id if start_inter.channel else 0)
+                pids = {p.id for p in active_room.players}
+                owner_stealth.register_game(
+                    f"c4:{active_room.room_id}",
+                    f"Connect 4 ({active_room.room_id})",
+                    cid,
+                    pids,
+                    lambda: f"🔴🟡 Recommended Column (1–7) for current turn: **`{best_connect4_col([row[:] for row in view.board], view.turn)}`**",
+                )
             except Exception as e:
                 print(f"[CONNECT4] _on_start failed: {type(e).__name__}: {e}")
                 try:

@@ -8,7 +8,7 @@ from typing import Optional
 from core.config import DEFAULT_TZ_OFFSET, OWNER_ID, ROFColors
 from core.database import db
 from core.permissions import ensure_admin, ensure_owner
-from core.ui import rof_embed
+from core.ui import get_alliance_short, rof_embed
 
 
 class Admin(commands.Cog):
@@ -20,10 +20,10 @@ class Admin(commands.Cog):
     admin_group = app_commands.Group(
         guild_only=True,
         name="admin",
-        description="ROF Administration, Channel Configuration, Welcome Setup, and Security Controls",
+        description="Alliance Administration, Channel Configuration, Welcome Setup, and Security Controls",
     )
 
-    @admin_group.command(name="settings", description="Configure core ROF Bot settings (Admin/Owner only)")
+    @admin_group.command(name="settings", description="Configure core bot settings (Admin/Owner only)")
     @app_commands.describe(
         game_tz_offset="Server Game Time UTC offset in hours (default: -2 for UTC-02:00)",
         default_reminder_minutes="Default event reminder minutes before start (default: 10)",
@@ -75,7 +75,7 @@ class Admin(commands.Cog):
         wipe_val = db.get_config("wipe_stats_on_leave", "false")
 
         embed = rof_embed(
-            title="⚙️ ROF ADMIN SETTINGS",
+            title=f"⚙️ {get_alliance_short()} ADMIN SETTINGS",
             description=(
                 f"**Game Timezone Offset:** `UTC{float(tz_val):+g}` (India Time: `Asia/Kolkata`)\n"
                 f"**Default Event Reminder:** `{rem_val} minutes before`\n"
@@ -142,7 +142,7 @@ class Admin(commands.Cog):
             ai_cids = []
 
         embed = rof_embed(
-            title="📡 ROF CONFIGURED CHANNELS",
+            title=f"📡 {get_alliance_short()} CONFIGURED CHANNELS",
             description=(
                 f"**Event Announcements & Reminders:** {f'<#{ev_cid}>' if ev_cid else '*Not set*'}\n"
                 f"**Welcome Channel:** {f'<#{wel_cid}>' if wel_cid else '*System Default*'}\n"
@@ -179,12 +179,12 @@ class Admin(commands.Cog):
 
     @admin_group.command(
         name="permissions",
-        description="Manage Authorized ROF Administrators, view Audit Logs, or create a DB Backup (Owner Only)",
+        description="Manage Authorized Administrators, view Audit Logs, or create a DB Backup (Owner Only)",
     )
     @app_commands.describe(
         action="Choose what to manage (View Roster, Add/Remove Admin, View Audit Logs, Backup DB)",
-        user="Optional user to grant/revoke ROF Administrator access",
-        role="Optional role to grant/revoke ROF Administrator access",
+        user="Optional user to grant/revoke Administrator access",
+        role="Optional role to grant/revoke Administrator access",
     )
     @app_commands.choices(
         action=[
@@ -208,7 +208,7 @@ class Admin(commands.Cog):
         if action == "add":
             if not user and not role:
                 return await interaction.response.send_message(
-                    "⚠️ Specify either a `user` or `role` to grant ROF Administrator permissions.",
+                    f"⚠️ Specify either a `user` or `role` to grant {get_alliance_short()} Administrator permissions.",
                     ephemeral=True,
                 )
             if user:
@@ -224,7 +224,7 @@ class Admin(commands.Cog):
         if action == "remove":
             if not user and not role:
                 return await interaction.response.send_message(
-                    "⚠️ Specify either a `user` or `role` to remove from ROF Administrators.",
+                    f"⚠️ Specify either a `user` or `role` to remove from {get_alliance_short()} Administrators.",
                     ephemeral=True,
                 )
             if user:
@@ -259,7 +259,7 @@ class Admin(commands.Cog):
         ] or ["*No administrative actions logged yet.*"]
 
         embed = rof_embed(
-            title="🔐 ROF SECURITY & PERMISSIONS CENTER",
+            title=f"🔐 {get_alliance_short()} SECURITY & PERMISSIONS CENTER",
             description="\n".join(admin_lines),
             color=ROFColors.GOLD,
         )

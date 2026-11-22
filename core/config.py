@@ -57,6 +57,16 @@ def get_game_tz(offset_hours: float = None) -> timezone:
     return timezone(timedelta(hours=float(offset_hours)))
 
 
+def format_tz_label(offset_hours: float = None) -> str:
+    """Format a UTC offset float cleanly, e.g. -2.0 -> 'UTC-02:00', 5.5 -> 'UTC+05:30'."""
+    off_val = DEFAULT_TZ_OFFSET if offset_hours is None else float(offset_hours)
+    sign = "+" if off_val >= 0 else "-"
+    abs_val = abs(off_val)
+    hrs = int(abs_val)
+    mins = int(round((abs_val - hrs) * 60))
+    return f"UTC{sign}{hrs:02d}:{mins:02d}"
+
+
 def format_dual_timestamps(dt: datetime, offset_hours: float = None) -> dict:
     """Convert any timezone-aware datetime to Game Time (UTC-2), India Time (Asia/Kolkata), and Discord epoch."""
     if dt.tzinfo is None:
@@ -107,9 +117,16 @@ RANKS = [
     (1000, "ROF Legend", "👑"),
 ]
 
-def get_rank(points: int):
+def get_rank(points: int, alliance_short: str = None):
+    if alliance_short is None:
+        try:
+            from core.database import db
+            alliance_short = (db.get_config("alliance_short", BRAND_SHORT) or BRAND_SHORT).strip()
+        except Exception:
+            alliance_short = BRAND_SHORT
     current = (RANKS[0][1], RANKS[0][2])
     for threshold, name, emoji in RANKS:
         if points >= threshold:
-            current = (name, emoji)
+            resolved = f"{alliance_short} Legend" if name == "ROF Legend" else name
+            current = (resolved, emoji)
     return current

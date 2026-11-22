@@ -13,10 +13,11 @@ from core.config import (
     RULES_CHANNEL_ID,
     WELCOME_CHANNEL_ID,
     format_dual_timestamps,
+    format_tz_label,
 )
 from core.database import db
 from core.permissions import ensure_admin
-from core.ui import safe_reply_error, rof_embed
+from core.ui import get_alliance_name, get_alliance_short, safe_reply_error, rof_embed
 
 
 # ==============================================================================
@@ -82,7 +83,7 @@ def save_rules(text: str, actor_id: int = 0):
 # MODAL
 # ==============================================================================
 
-class RulesModal(discord.ui.Modal, title="Set ROF Alliance Rules"):
+class RulesModal(discord.ui.Modal):
     rules_input = discord.ui.TextInput(
         label="Enter the alliance rules (one per line):",
         style=discord.TextStyle.paragraph,
@@ -93,7 +94,7 @@ class RulesModal(discord.ui.Modal, title="Set ROF Alliance Rules"):
     )
 
     def __init__(self):
-        super().__init__()
+        super().__init__(title=f"Set {get_alliance_short()} Alliance Rules"[:45])
         # fix D: guarded prefill.
         try:
             self.rules_input.default = db.get_formatted_rules()
@@ -154,12 +155,13 @@ class Members(commands.Cog):
     # ---------- welcome rendering ----------
 
     def build_welcome_channel_embed(self, member: discord.Member) -> discord.Embed:
+        short = get_alliance_short()
         return rof_embed(
-            title="🛡️ WELCOME TO ROF!",
+            title=f"🛡️ WELCOME TO {short}!",
             description=(
-                f"Welcome to the alliance, {member.mention}!\n"
+                f"Welcome to **{get_alliance_name()}**, {member.mention}!\n"
                 f"We're glad to have you here.\n\n"
-                f"📬 Check your **Direct Messages** for alliance rules and a quick guide to using the ROF bot.\n"
+                f"📬 Check your **Direct Messages** for alliance rules and a quick guide to using the {short} bot.\n"
                 f"Have fun and enjoy the chaos! 🔥"
             ),
             color=ROFColors.GOLD,
@@ -208,12 +210,16 @@ class Members(commands.Cog):
                 "No upcoming events scheduled right now. Use `/events` anytime to check!"
             )
 
-        rules_text = _safe_rules_text()
+        rules_text = _safe_rules_text()[:1020]
+        short = get_alliance_short()
+        full_name = get_alliance_name()
+        tz_label = format_tz_label(tz_off)
+        rem_mins = _safe_config_int("default_reminder_minutes", 10)
 
         embed_rules = rof_embed(
-            title=f"🛡️ WELCOME TO ROF, {member.display_name.upper()}!",
+            title=f"🛡️ WELCOME TO {short}, {member.display_name.upper()}!",
             description=(
-                "Welcome to the **Rise of Farkers (ROF)** alliance!\n"
+                f"Welcome to the **{full_name}** alliance!\n"
                 "We operate as a coordinated team across combat events, rallies, and our server gaming arena."
             ),
             color=ROFColors.GOLD,
@@ -229,16 +235,16 @@ class Members(commands.Cog):
         embed_rules.add_field(
             name="🌐 Important Alliance Information",
             value=(
-                "• **Standard Game Time:** `UTC-02:00` (with automatic **India Time `IST`** conversion)\n"
-                "• **Event Reminders:** Announced 10 minutes before launch\n"
+                f"• **Standard Game Time:** `{tz_label}` (with automatic **India Time `IST`** conversion)\n"
+                f"• **Event Reminders:** Announced {rem_mins} minutes before launch\n"
                 f"• **Upcoming Schedule:**\n{events_summary}"
             ),
             inline=False,
         )
 
         embed_guide = rof_embed(
-            title="🎮 ROF BOT QUICK-START GUIDE",
-            description="Here is how to get the most out of the ROF Discord Bot:",
+            title=f"🎮 {short} BOT QUICK-START GUIDE",
+            description=f"Here is how to get the most out of the {short} Discord Bot:",
             color=ROFColors.ARENA,
         )
         embed_guide.add_field(
@@ -252,7 +258,7 @@ class Members(commands.Cog):
         embed_guide.add_field(
             name="🕹️ How to Play Games",
             value=(
-                "Use `/games` to open the **ROF Gaming Arena**! Play solo games "
+                f"Use `/games` to open the **{short} Gaming Arena**! Play solo games "
                 "(Wordle, Quick Math, Trivia, Memory Challenge, Reaction Speed Test) "
                 "or join multiplayer rooms (Four-Digit Codebreaker, Reaction Race, Trivia Battle, RPS)."
             ),
@@ -268,7 +274,7 @@ class Members(commands.Cog):
         )
         embed_guide.add_field(
             name="⚡ Useful Commands",
-            value="`/games` · `/events` · `/rules` · `/profile` · `/leaderboard` · `/help`",
+            value="`/games` · `/events` · `/rules view` · `/profile` · `/leaderboard` · `/help`",
             inline=False,
         )
         return [embed_rules, embed_guide]
@@ -373,13 +379,13 @@ class Members(commands.Cog):
 
     rules_group = app_commands.Group(
         guild_only=True,
-        name="rules", description="View and manage official ROF Alliance rules"
+        name="rules", description="View and manage official Alliance rules"
     )
 
-    @rules_group.command(name="view", description="View the official ROF Alliance rules")
+    @rules_group.command(name="view", description="View the official Alliance rules")
     async def rules_view_cmd(self, interaction: discord.Interaction):
         embed = rof_embed(
-            title="📜 ROF ALLIANCE RULES",
+            title=f"📜 {get_alliance_short()} ALLIANCE RULES",
             description=_safe_rules_text(),
             color=ROFColors.ARENA,
         )
@@ -437,7 +443,7 @@ class Members(commands.Cog):
                 await interaction.response.send_modal(RulesModal())
             except Exception as e:
                 print(f"[MEMBERS] send_modal failed (rules edit): {e}")
-            await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
+                await safe_reply_error(interaction, "⚠️ Could not open the form right now. Please try again.")
             return
 
         # fix G: guarded DB write.

@@ -1,6 +1,6 @@
 # core/permissions.py
 import discord
-from core.config import OWNER_ID
+from core.config import BRAND_SHORT, OWNER_ID
 from core.database import db
 
 
@@ -24,7 +24,8 @@ def is_admin_interaction(interaction: discord.Interaction) -> bool:
 async def ensure_owner(interaction: discord.Interaction) -> bool:
     if is_owner_user(interaction.user.id):
         return True
-    msg = "🔒 Access Denied: Only the **ROF Bot Owner** can perform this action."
+    short = (db.get_config("alliance_short", BRAND_SHORT) or BRAND_SHORT).strip()
+    msg = f"🔒 Access Denied: Only the **{short} Bot Owner** can perform this action."
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
     else:
@@ -35,7 +36,8 @@ async def ensure_owner(interaction: discord.Interaction) -> bool:
 async def ensure_admin(interaction: discord.Interaction) -> bool:
     if is_admin_interaction(interaction):
         return True
-    msg = "🔒 Access Denied: Only **Authorized ROF Administrators** can perform this action."
+    short = (db.get_config("alliance_short", BRAND_SHORT) or BRAND_SHORT).strip()
+    msg = f"🔒 Access Denied: Only **Authorized {short} Administrators** can perform this action."
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
     else:

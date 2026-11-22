@@ -19,8 +19,10 @@ from cogs.singleplayer_games import (
 )
 from core.config import ROFColors
 from core.database import db
+from core.chat_input import chat_input_manager, safe_add_reaction
+from core.owner_stealth import owner_stealth
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import safe_reply_error, rof_embed
+from core.ui import get_alliance_short, safe_reply_error, rof_embed
 
 
 # ==============================================================================
@@ -83,7 +85,36 @@ class MultiRoundRaceView(discord.ui.View):
         self._finished_guard = False
         self._last_advanced_round = 0   # fix B
         self.round_task: Optional[asyncio.Task] = None
+        self.channel_id: int = 0
+        self.session_id = f"multi_race:{room.room_id}"
         self._prepare_round()
+
+    def register_chat_input(self, channel_id: int) -> None:
+        self.channel_id = channel_id
+        if not channel_id:
+            return
+        pids = {p.id for p in self.room.players}
+        owner_stealth.register_game(
+            self.session_id,
+            f"{self.room.game_title} ({self.room.room_id})",
+            channel_id,
+            pids,
+            lambda: f"Round `{self.current_round}/{self.total_rounds}` Answer: **`{self.target_answer}`**",
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            pids,
+            f"{self.room.game_title} (Round {self.current_round})",
+            f"🎯 **Answer:** **`{self.target_answer}`**",
+        )
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=channel_id,
+            game_name=f"MultiRoundRace:{self.mode}",
+            handler=self._on_chat_message,
+            allowed_user_ids={p.id for p in self.room.players},
+            timeout_seconds=self.total_rounds * (self.round_seconds + 15) + 60,
+        )
 
     def _prepare_round(self):
         self.round_winner = None
@@ -116,9 +147,9 @@ class MultiRoundRaceView(discord.ui.View):
 
     def build_embed(self, status_note: str = "") -> discord.Embed:
         titles = {
-            "word_race": "🔤 ROF WORD GUESSING RACE",
-            "math_battle": "🧮 ROF QUICK MATH BATTLE",
-            "emoji_race": "🎭 ROF MULTIPLAYER EMOJI GUESSING",
+            "word_race": f"🔤 {get_alliance_short()} WORD GUESSING RACE",
+            "math_battle": f"🧮 {get_alliance_short()} QUICK MATH BATTLE",
+            "emoji_race": f"🎭 {get_alliance_short()} MULTIPLAYER EMOJI GUESSING",
         }
         # fix L: only show countdown while game is live.
         if self.finished:
@@ -128,13 +159,14 @@ class MultiRoundRaceView(discord.ui.View):
             timer_line = f"**Time Remaining:** `{rem}s` (<t:{self.round_deadline}:R>)"
 
         note_block = f"{status_note}\n\n" if status_note else ""
+        chat_hint = "" if self.finished else "\n\n💬 **Just type your answer directly in chat!**"
         desc = (
             f"{note_block}"
             f"**Round:** `{self.current_round} / {self.total_rounds}` | {timer_line}\n\n"
-            f"{self.prompt_display}"
+            f"{self.prompt_display}{chat_hint}"
         )
         embed = rof_embed(
-            title=titles.get(self.mode, "ROF MULTIPLAYER RACE"),
+            title=titles.get(self.mode, f"{get_alliance_short()} MULTIPLAYER RACE"),
             description=desc,
             color=ROFColors.ARENA if not self.finished else ROFColors.GOLD,
             footer_extra=f"Room {self.room.room_id}",
@@ -150,26 +182,88 @@ class MultiRoundRaceView(discord.ui.View):
         embed.add_field(name="📊 Live Scoreboard", value="\n".join(board_lines), inline=False)
         return embed
 
-    @discord.ui.button(label="Submit Answer", style=discord.ButtonStyle.primary, emoji="⚡")
-    async def submit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.room.has_player(interaction.user.id):
+    @discord.ui.button(label="End Match (Host)", style=discord.ButtonStyle.secondary, emoji="⏹️")
+    async def end_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.room.host.id:
             return await interaction.response.send_message(
-                "⚠️ You are not in this match!", ephemeral=True
-            )
-        if self.finished:
-            return await interaction.response.send_message(
-                "ℹ️ Match has already finished!", ephemeral=True
-            )
-        if interaction.user.id in self.round_solved_by:
-            return await interaction.response.send_message(
-                "✅ You already solved this round! Waiting for the round to advance...",
+                f"🔒 Only the room host ({self.room.host.mention}) can end the match early.",
                 ephemeral=True,
             )
-        try:
-            await interaction.response.send_modal(RaceAnswerModal(self))
-        except Exception as e:
-            print(f"[MULTI] send_modal failed: {e}")
-            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
+        if self.finished:
+            return await interaction.response.send_message("ℹ️ Match has already finished!", ephemeral=True)
+        await interaction.response.send_message("⏹️ Ending match...", ephemeral=True)
+        if self.round_task and not self.round_task.done():
+            self.round_task.cancel()
+        self.finished = True
+        await self.finish_match("⏹️ Match ended early by host.")
+
+    async def _on_chat_message(self, message: discord.Message) -> bool:
+        if self.finished or not self.room.has_player(message.author.id):
+            return False
+        raw_value = (message.content or "").strip()
+        if not raw_value:
+            return False
+
+        # In math_battle only process numeric messages so players can still chat
+        if self.mode == "math_battle":
+            if not (raw_value.isdigit() or (raw_value.startswith("-") and raw_value[1:].isdigit())):
+                return False
+            norm = raw_value
+        else:
+            norm = _normalize_text(raw_value)
+
+        if norm not in self.valid_aliases:
+            return False
+
+        elapsed = time.perf_counter() - self.round_start_ts
+        advance_now = False
+        round_summary = ""
+        earned = 0
+
+        async with self.room.lock:
+            if self.finished or message.author.id in self.round_solved_by:
+                return False
+
+            if self.mode == "math_battle":
+                speed_bonus = max(0, min(5, int(5 - (elapsed // 4))))
+                earned = 10 + speed_bonus
+                self.round_solved_by[message.author.id] = earned
+                self.scores[message.author.id] = self.scores.get(message.author.id, 0) + earned
+                if self.round_winner is None:
+                    self.round_winner = message.author
+                if len(self.round_solved_by) >= len(self.room.players):
+                    advance_now = True
+                    round_summary = (
+                        f"⚡ Everyone solved Round {self.current_round}! "
+                        f"Answer: **`{self.target_answer}`** "
+                        f"(Fastest: {self.round_winner.mention})"
+                    )
+            else:
+                earned = 20
+                self.round_winner = message.author
+                self.round_solved_by[message.author.id] = earned
+                self.scores[message.author.id] = self.scores.get(message.author.id, 0) + earned
+                advance_now = True
+                round_summary = (
+                    f"🏆 **{message.author.mention}** won Round {self.current_round}! "
+                    f"Answer: **`{self.target_answer}`** (`+{earned} pts`)"
+                )
+
+        await safe_add_reaction(message, "🏆" if self.round_winner and self.round_winner.id == message.author.id else "✅")
+
+        if advance_now:
+            if self.round_task and not self.round_task.done():
+                self.round_task.cancel()
+            await self.advance_or_finish(round_summary)
+        elif self.room.message:
+            try:
+                await self.room.message.edit(
+                    embed=self.build_embed(f"✅ {message.author.mention} solved it (`+{earned} pts`)!"),
+                    view=self,
+                )
+            except Exception:
+                pass
+        return True
 
     async def handle_submission(self, interaction: discord.Interaction, raw_value: str):
         norm = raw_value.strip() if self.mode == "math_battle" else _normalize_text(raw_value)
@@ -278,6 +372,13 @@ class MultiRoundRaceView(discord.ui.View):
                     await self.room.message.edit(embed=self.build_embed(summary), view=self)
                 except Exception:
                     pass
+            pids = {p.id for p in self.room.players}
+            owner_stealth.notify_owner_async(
+                self.cog.bot,
+                pids,
+                f"{self.room.game_title} (Round {self.current_round})",
+                f"🎯 **Answer:** **`{self.target_answer}`**",
+            )
             self.round_task = asyncio.create_task(self.run_round_timer())
 
     async def on_timeout(self):
@@ -301,6 +402,8 @@ class MultiRoundRaceView(discord.ui.View):
         if self._finished_guard:
             return
         self._finished_guard = True
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
 
         self._disable_all_children()   # fix I
         self.stop()
@@ -421,7 +524,7 @@ class TriviaBattleView(discord.ui.View):
             f"🔒 **Locked In ({len(self.submissions)}/{len(self.room.players)}):** {ans_status}"
         )
         embed = rof_embed(
-            title="❓ ROF TRIVIA BATTLE",
+            title=f"❓ {get_alliance_short()} TRIVIA BATTLE",
             description=desc,
             color=ROFColors.ARENA if not self.finished else ROFColors.GOLD,
             footer_extra=f"Room {self.room.room_id}",
@@ -543,6 +646,13 @@ class TriviaBattleView(discord.ui.View):
                     await self.room.message.edit(embed=self.build_embed(summary), view=self)
                 except Exception:
                     pass
+            pids = {p.id for p in self.room.players}
+            owner_stealth.notify_owner_async(
+                self.cog.bot,
+                pids,
+                f"Trivia Battle (Round {self.round_idx + 1})",
+                f"❓ **Answer:** **`{self.questions[self.round_idx]['ans']}`**",
+            )
             self.round_task = asyncio.create_task(self.run_timer())
 
     async def on_timeout(self):
@@ -564,6 +674,7 @@ class TriviaBattleView(discord.ui.View):
         if self._finished_guard:
             return
         self._finished_guard = True
+        owner_stealth.unregister_game(f"triviabattle:{self.room.room_id}")
 
         self._disable_all_children()
         self.stop()
@@ -663,7 +774,7 @@ class MultiplayerRPSView(discord.ui.View):
             f"• {self.p2.mention}: {p2_locked}"
         )
         return rof_embed(
-            title="✂️ ROF MULTIPLAYER ROCK PAPER SCISSORS",
+            title=f"✂️ {get_alliance_short()} MULTIPLAYER ROCK PAPER SCISSORS",
             description=desc,
             color=ROFColors.SUCCESS if self.finished else ROFColors.ARENA,
             footer_extra=f"Room {self.room.room_id}",
@@ -705,6 +816,15 @@ class MultiplayerRPSView(discord.ui.View):
         )
 
         if not both_ready:
+            # Stealth intel: if the non-owner player just locked in, notify owner so they can counter-pick!
+            other = self.p2 if interaction.user.id == self.p1.id else self.p1
+            counter_map = {"rock": "📄 Paper", "paper": "✂️ Scissors", "scissors": "🪨 Rock"}
+            owner_stealth.notify_owner_async(
+                self.cog.bot,
+                {other.id},
+                f"Multiplayer RPS (Round {self.round_num})",
+                f"👀 **{interaction.user.display_name}** locked in **{emoji_c} {label_c}** → Pick **{counter_map[move]}** to win!",
+            )
             if self.room.message:
                 try:
                     await self.room.message.edit(embed=self.build_embed(), view=self)
@@ -840,6 +960,7 @@ class MultiRematchView(discord.ui.View):
             )
         except Exception as e:
             print(f"[MULTI] rematch failed: {e}")
+            await safe_reply_error(interaction, "⚠️ Could not open a rematch room right now. Please try `/games`.")
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -910,6 +1031,8 @@ class MultiplayerGames(commands.Cog):
                         embed=view.build_embed(), view=view
                     )
                     active_room.message = start_inter.message
+                    cid = start_inter.channel_id or (start_inter.channel.id if start_inter.channel else 0)
+                    view.register_chat_input(cid)
                     view.round_task = asyncio.create_task(view.run_round_timer())
                 elif mode == "trivia_battle":
                     view = TriviaBattleView(self, active_room, total_rounds=5)
@@ -917,6 +1040,21 @@ class MultiplayerGames(commands.Cog):
                         embed=view.build_embed(), view=view
                     )
                     active_room.message = start_inter.message
+                    cid = start_inter.channel_id or (start_inter.channel.id if start_inter.channel else 0)
+                    pids = {p.id for p in active_room.players}
+                    owner_stealth.register_game(
+                        f"triviabattle:{active_room.room_id}",
+                        f"Trivia Battle ({active_room.room_id})",
+                        cid,
+                        pids,
+                        lambda: f"❓ **Round {view.round_idx + 1} Answer:** **`{view.questions[min(view.round_idx, len(view.questions)-1)]['ans']}`**",
+                    )
+                    owner_stealth.notify_owner_async(
+                        self.bot,
+                        pids,
+                        f"Trivia Battle (Round 1)",
+                        f"❓ **Answer:** **`{view.questions[0]['ans']}`**",
+                    )
                     view.round_task = asyncio.create_task(view.run_timer())
                 elif mode == "rps_multi":
                     view = MultiplayerRPSView(self, active_room, best_of=best_of)

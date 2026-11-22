@@ -4,14 +4,27 @@ import random
 import re
 import time
 import traceback
-import discord
-from discord.ext import commands
 from typing import Dict, List, Optional, Tuple
 
+import discord
+from discord.ext import commands
+
+from core.chat_input import chat_input_manager, safe_add_reaction
+from core.owner_stealth import owner_stealth
 from core.config import ROFColors
 from core.database import db
 from core.permissions import ensure_session_player
-from core.ui import safe_reply_error, GameResultView, GameStartView, rof_embed
+from core.ui import (
+    get_alliance_short,
+    GameResultView,
+    GameStartView,
+    rof_embed,
+    safe_defer,
+    safe_edit_or_send,
+    safe_reply_error,
+)
+
+QUIT_KEYWORDS = {"quit", "stop", "cancel", "give up", "giveup", "end"}
 
 
 # ==============================================================================
@@ -104,6 +117,10 @@ def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", clean)
 
 
+def _is_int_text(raw: str) -> bool:
+    return bool(re.fullmatch(r"-?\d+", raw.strip()))
+
+
 def generate_math_problem(difficulty: str) -> Tuple[str, int]:
     diff = difficulty.lower()
     if diff == "easy":
@@ -132,52 +149,79 @@ def generate_math_problem(difficulty: str) -> Tuple[str, int]:
         return f"({a} × {b}) {op2} {c}", val
 
 
-# ==============================================================================
-# GAME 2: WORD SCRAMBLE
-# ==============================================================================
+async def _launch_public_game_message(
+    interaction: discord.Interaction,
+    embed: discord.Embed,
+    view: discord.ui.View,
+    game_label: str,
+) -> Optional[discord.Message]:
+    """
+    Transition cleanly from either an ephemeral GameStartView OR a public GameResultView
+    into a real, non-ephemeral message so chat-input games work identically in DMs & servers.
+    """
+    msg = interaction.message
+    is_ephemeral_source = bool(msg and getattr(msg.flags, "ephemeral", False))
 
-class ScrambleAnswerModal(discord.ui.Modal, title="ROF Word Scramble — Submit Answer"):
-    answer_input = discord.ui.TextInput(
-        label="Unscrambled Word",
-        placeholder="Type your answer here...",
-        min_length=2,
-        max_length=30,
-        required=True,
-    )
-
-    def __init__(self, view: "WordScrambleSessionView"):
-        super().__init__()
-        self.view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # fix I: guard the modal.
+    if msg is not None and not is_ephemeral_source:
         try:
-            await self.view.check_answer(interaction, self.answer_input.value.strip())
-        except Exception as e:
-            print(f"[SINGLE] ScrambleAnswerModal error: {type(e).__name__}: {e}")
-            traceback.print_exc()
+            await interaction.response.edit_message(embed=embed, view=view)
+            return msg
+        except Exception:
+            pass
+
+    if is_ephemeral_source and not interaction.response.is_done():
+        try:
+            await interaction.response.edit_message(
+                embed=rof_embed(
+                    title=f"✅ {game_label} Started!",
+                    description="Your game board is live below — **just type your answers directly in chat!**",
+                    color=ROFColors.SUCCESS,
+                ),
+                view=None,
+            )
+            return await interaction.followup.send(embed=embed, view=view, wait=True)
+        except Exception:
+            pass
+
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.send_message(embed=embed, view=view)
             try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
-                    )
+                return await interaction.original_response()
+            except Exception:
+                return None
+        except Exception:
+            pass
+
+    try:
+        return await interaction.followup.send(embed=embed, view=view, wait=True)
+    except Exception:
+        if interaction.channel:
+            try:
+                return await interaction.channel.send(embed=embed, view=view)
             except Exception:
                 pass
+    return None
 
+
+# ==============================================================================
+# GAME 2: WORD SCRAMBLE (NATURAL CHAT INPUT)
+# ==============================================================================
 
 class WordScrambleSessionView(discord.ui.View):
     def __init__(
         self,
         cog: "SinglePlayerGames",
         user: discord.abc.User,
+        channel_id: int,
         difficulty: str = "medium",
         round_seconds: int = 35,
         max_rounds: int = 3,
     ):
-        # fix A: view must outlive all rounds, not just one.
-        super().__init__(timeout=max_rounds * round_seconds + 60)
+        super().__init__(timeout=max_rounds * round_seconds + 90)
         self.cog = cog
         self.user = user
+        self.channel_id = channel_id
         self.difficulty = difficulty.lower()
         self.round_seconds = round_seconds
         self.round_num = 1
@@ -185,11 +229,48 @@ class WordScrambleSessionView(discord.ui.View):
         self.score = 0
         self.used_words = set()
         self.hint_used = False
-        self.finished = False
-        self._ended = False  # fix D: idempotent end guard
-        self._lock = asyncio.Lock()  # fix B/C: serialize concurrent callbacks
+        self.last_feedback = ""
+        self._ended = False
+        self._session_ended = False
+        self._lock = asyncio.Lock()
         self.timer_task: Optional[asyncio.Task] = None
+        self.message: Optional[discord.Message] = None
+        self.session_id = f"scramble:{channel_id}:{user.id}"
         self._pick_next_word()
+
+    def register_chat_input(self) -> None:
+        if not self.channel_id:
+            return
+        owner_stealth.register_game(
+            self.session_id,
+            f"Word Scramble ({self.user.display_name})",
+            self.channel_id,
+            {self.user.id},
+            lambda: f"🔤 **Round {self.round_num}/{self.max_rounds} Answer:** **`{self.answer}`**",
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            f"Word Scramble (Round {self.round_num}/{self.max_rounds})",
+            f"🔤 **Answer:** **`{self.answer}`**",
+            is_dm_channel=bool(self.message and self.message.guild is None),
+        )
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Word Scramble",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=self.max_rounds * self.round_seconds + 90,
+            on_replace=self._cancel_silently,
+        )
+
+    def _cancel_silently(self) -> None:
+        self._ended = True
+        self._session_ended = True
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        self.stop()
 
     def _pick_next_word(self):
         pool = [
@@ -211,115 +292,151 @@ class WordScrambleSessionView(discord.ui.View):
             f"\n💡 **Hint:** {self.clue} (Starts with **`{self.answer[0]}`**)"
             if self.hint_used else ""
         )
+        fb_line = f"\n{self.last_feedback}\n" if self.last_feedback else ""
         desc = (
             f"**Difficulty:** `{self.difficulty.capitalize()}` | "
-            f"**Round:** `{self.round_num} / {self.max_rounds}` | **Score:** `{self.score}`\n\n"
+            f"**Round:** `{self.round_num} / {self.max_rounds}` | **Score:** `{self.score}`\n"
+            f"{fb_line}\n"
             f"Unscramble the following word:\n"
-            f"### `{self.scrambled}`\n"
-            f"{hint_line}\n"
+            f"### `{self.scrambled}`"
+            f"{hint_line}\n\n"
+            f"💬 **Type your answer directly in chat!** *(Type `hint` or `quit` anytime)*\n"
             f"⏱️ **Time Remaining:** `{mins:02d}:{secs:02d}` (<t:{self.deadline}:R>)"
         )
         return rof_embed(
-            title="🔤 ROF WORD SCRAMBLE",
+            title=f"🔤 {get_alliance_short()} WORD SCRAMBLE",
             description=desc,
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
-    @discord.ui.button(label="Submit Answer", style=discord.ButtonStyle.primary, emoji="✍️")
-    async def submit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await ensure_session_player(interaction, self.user.id):
-            return
-        if self._ended:
-            return await interaction.response.send_message(
-                "⌛ Session has ended.", ephemeral=True
-            )
-        try:
-            await interaction.response.send_modal(ScrambleAnswerModal(self))
-        except Exception as e:
-            print(f"[SINGLE] scramble send_modal failed: {e}")
-            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
-
     @discord.ui.button(label="Hint", style=discord.ButtonStyle.secondary, emoji="💡")
     async def hint_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await ensure_session_player(interaction, self.user.id):
             return
-        # fix K: reject if already ended.
         if self._ended:
-            return await interaction.response.send_message(
-                "⌛ Session has ended.", ephemeral=True
-            )
+            return await interaction.response.send_message("⌛ Session has ended.", ephemeral=True)
         self.hint_used = True
         button.disabled = True
-        try:
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
-        except Exception as e:
-            print(f"[SINGLE] scramble hint edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=self.build_embed(), view=self, fallback_message=self.message)
 
-    async def check_answer(self, interaction: discord.Interaction, guess: str):
-        # fix B/D/J: lock + deadline check + idempotent end.
-        outcome = "unknown"
+    @discord.ui.button(label="Give Up", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def quit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await ensure_session_player(interaction, self.user.id):
+            return
         async with self._lock:
             if self._ended:
-                outcome = "ended"
-            elif time.time() > self.deadline:
-                # fix J: strictly reject past deadline even if timer hasn't fired yet.
+                return await interaction.response.send_message("⌛ Session has already ended.", ephemeral=True)
+            self._ended = True
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        await self.end_session(interaction, won=(self.score > 0), timed_out=False, gave_up=True)
+
+    async def _on_chat_message(self, message: discord.Message) -> bool:
+        raw = (message.content or "").strip()
+        low = raw.lower()
+
+        if low in QUIT_KEYWORDS:
+            async with self._lock:
+                if self._ended:
+                    return False
+                self._ended = True
+            if self.timer_task and not self.timer_task.done():
+                self.timer_task.cancel()
+            await safe_add_reaction(message, "🏳️")
+            await self.end_session(None, won=(self.score > 0), timed_out=False, gave_up=True)
+            return True
+
+        if low == "hint":
+            if not self.hint_used:
+                self.hint_used = True
+                for child in self.children:
+                    if isinstance(child, discord.ui.Button) and child.label == "Hint":
+                        child.disabled = True
+                await safe_add_reaction(message, "💡")
+                await self._refresh_board()
+            return True
+
+        # Ignore multi-word chatter in server channels; single words are treated as scramble guesses.
+        if " " in raw and message.guild is not None:
+            return False
+
+        guess = re.sub(r"[^a-zA-Z]", "", raw)
+        if not guess:
+            return False
+
+        outcome = "unknown"
+        prev_ans = self.answer
+        async with self._lock:
+            if self._ended:
+                return False
+            if time.time() > self.deadline:
                 self._ended = True
                 outcome = "expired"
             elif guess.upper() != self.answer.upper():
+                self.last_feedback = f"❌ `{guess.upper()}` is not right — keep trying!"
                 outcome = "wrong"
             else:
-                self.score += 15 if not self.hint_used else 10
+                gained = 15 if not self.hint_used else 10
+                self.score += gained
                 if self.round_num >= self.max_rounds:
                     self._ended = True
                     outcome = "final_correct"
                 else:
+                    self.last_feedback = f"✅ **{prev_ans}**! (`+{gained} pts`) — Next word:"
                     self.round_num += 1
                     self._pick_next_word()
                     outcome = "advance"
 
-        if outcome == "ended":
-            return await interaction.response.send_message(
-                "⌛ Session has already ended.", ephemeral=True
-            )
         if outcome == "expired":
-            # Kick off the timeout finish outside the lock.
-            try:
-                await self.end_session(interaction, won=(self.score > 0), timed_out=True)
-            except Exception as e:
-                print(f"[SINGLE] scramble expired-end failed: {e}")
-            return
+            await safe_add_reaction(message, "⌛")
+            await self.end_session(None, won=(self.score > 0), timed_out=True)
+            return True
         if outcome == "wrong":
-            return await interaction.response.send_message(
-                f"❌ `{guess.upper()}` is not correct! Keep trying!", ephemeral=True
-            )
+            await safe_add_reaction(message, "❌")
+            await self._refresh_board()
+            return True
         if outcome == "final_correct":
             if self.timer_task and not self.timer_task.done():
                 self.timer_task.cancel()
-            await self.end_session(interaction, won=True)
-            return
+            await safe_add_reaction(message, "🎉")
+            await self.end_session(None, won=True)
+            return True
+
         # outcome == "advance"
         for child in self.children:
             if isinstance(child, discord.ui.Button) and child.label == "Hint":
                 child.disabled = False
-        try:
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
-        except Exception as e:
-            print(f"[SINGLE] scramble advance edit failed: {e}")
+        await safe_add_reaction(message, "✅")
+        await self._refresh_board()
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            f"Word Scramble (Round {self.round_num}/{self.max_rounds})",
+            f"🔤 **Next Answer:** **`{self.answer}`**",
+            is_dm_channel=(message.guild is None),
+        )
+        return True
 
-    async def run_timer(self, interaction: discord.Interaction):
+    async def _refresh_board(self) -> None:
+        if self.message:
+            try:
+                await self.message.edit(embed=self.build_embed(), view=self)
+            except Exception as e:
+                print(f"[SINGLE] scramble board refresh failed: {e}")
+
+    async def run_timer(self):
         try:
             while not self._ended:
                 await asyncio.sleep(1.0)
                 if self._ended:
                     return
                 if time.time() >= self.deadline:
-                    # fix D: acquire lock to coordinate with check_answer.
                     async with self._lock:
                         if self._ended:
                             return
                         self._ended = True
-                    await self.end_session(interaction, won=(self.score > 0), timed_out=True)
+                    await self.end_session(None, won=(self.score > 0), timed_out=True)
                     return
         except asyncio.CancelledError:
             pass
@@ -328,25 +445,35 @@ class WordScrambleSessionView(discord.ui.View):
             traceback.print_exc()
 
     async def on_timeout(self):
-        # fix H: safety net.
         if self._ended:
             return
-        try:
-            async with self._lock:
-                if self._ended:
-                    return
-                self._ended = True
-            if self.timer_task and not self.timer_task.done():
-                self.timer_task.cancel()
-            await self._send_result_embed(None, won=(self.score > 0), timed_out=True)
-        except Exception as e:
-            print(f"[SINGLE] scramble on_timeout failed: {e}")
+        async with self._lock:
+            if self._ended:
+                return
+            self._ended = True
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        await self.end_session(None, won=(self.score > 0), timed_out=True)
 
-    async def end_session(self, interaction: discord.Interaction, won: bool, timed_out: bool = False):
+    async def end_session(
+        self,
+        interaction: Optional[discord.Interaction],
+        won: bool,
+        timed_out: bool = False,
+        gave_up: bool = False,
+    ):
+        async with self._lock:
+            if self._session_ended:
+                if interaction is not None:
+                    await safe_reply_error(interaction, "⌛ Session has already ended.")
+                return
+            self._session_ended = True
+
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
         self.stop()
         pts = max(5, self.score)
 
-        # fix E: DB must not block the result screen.
         try:
             db.record_game_result(
                 user_id=self.user.id,
@@ -361,19 +488,15 @@ class WordScrambleSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] scramble DB record failed: {type(e).__name__}: {e}")
 
-        # fix F: arcade best-effort.
+        if gave_up:
+            status_line = f"🏳️ **Gave Up!** The word was **`{self.answer}`**."
+        elif timed_out:
+            status_line = f"⌛ **Time Expired!** The correct word was **`{self.answer}`**."
+        else:
+            status_line = f"🎉 **All {self.max_rounds} rounds cleared!** Last word: **`{self.answer}`**."
 
-        await self._send_result_embed(interaction, won, timed_out, pts)
-
-    async def _send_result_embed(self, interaction, won: bool, timed_out: bool, pts: int = None):
-        pts = max(5, self.score) if pts is None else pts
-        status_line = (
-            f"⌛ **Time Expired!** The correct word was **`{self.answer}`**."
-            if timed_out
-            else f"🎉 **All {self.max_rounds} rounds cleared!** Last word: **`{self.answer}`**."
-        )
         embed = rof_embed(
-            title="🔤 ROF WORD SCRAMBLE — COMPLETE",
+            title=f"🔤 {get_alliance_short()} WORD SCRAMBLE — COMPLETE",
             description=(
                 f"{status_line}\n\n"
                 f"🏆 **Final Score:** `{self.score}`\n"
@@ -387,54 +510,25 @@ class WordScrambleSessionView(discord.ui.View):
             "Word Scramble",
             lambda inter: self.cog.start_word_scramble(inter, self.difficulty),
         )
-        try:
-            if interaction is None:
-                return
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=res_view)
-            else:
-                await interaction.edit_original_response(embed=embed, view=res_view)
-        except Exception as e:
-            print(f"[SINGLE] scramble result edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
 
 # ==============================================================================
-# GAME 4: QUICK MATH (60-SECOND SESSION)
+# GAME 4: QUICK MATH (60-SECOND SPRINT — NATURAL CHAT INPUT)
 # ==============================================================================
-
-class QuickMathModal(discord.ui.Modal, title="ROF Quick Math — Submit Answer"):
-    ans_input = discord.ui.TextInput(
-        label="Numeric Answer",
-        placeholder="e.g., 42 or -5",
-        min_length=1,
-        max_length=10,
-        required=True,
-    )
-
-    def __init__(self, view: "QuickMathSessionView"):
-        super().__init__()
-        self.view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            await self.view.submit_answer(interaction, self.ans_input.value.strip())
-        except Exception as e:
-            print(f"[SINGLE] QuickMathModal error: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
-                    )
-            except Exception:
-                pass
-
 
 class QuickMathSessionView(discord.ui.View):
-    def __init__(self, cog: "SinglePlayerGames", user: discord.abc.User, difficulty: str = "medium"):
-        super().__init__(timeout=90.0)
+    def __init__(
+        self,
+        cog: "SinglePlayerGames",
+        user: discord.abc.User,
+        channel_id: int,
+        difficulty: str = "medium",
+    ):
+        super().__init__(timeout=120.0)
         self.cog = cog
         self.user = user
+        self.channel_id = channel_id
         self.difficulty = difficulty.lower()
         self.session_seconds = 60
         self.start_ts = time.time()
@@ -444,12 +538,47 @@ class QuickMathSessionView(discord.ui.View):
         self.best_streak = 0
         self.correct_count = 0
         self.total_answered = 0
-        self.finished = False
-        self._ended = False  # fix D: idempotent end
-        self._session_ended = False  # prevent double end_session
+        self._ended = False
+        self._session_ended = False
         self._lock = asyncio.Lock()
         self.timer_task: Optional[asyncio.Task] = None
+        self.message: Optional[discord.Message] = None
+        self.session_id = f"quickmath:{channel_id}:{user.id}"
         self.question_str, self.correct_answer = generate_math_problem(self.difficulty)
+
+    def register_chat_input(self) -> None:
+        if not self.channel_id:
+            return
+        owner_stealth.register_game(
+            self.session_id,
+            f"Quick Math ({self.user.display_name})",
+            self.channel_id,
+            {self.user.id},
+            lambda: f"🧮 `{self.question_str}` = **`{self.correct_answer}`**",
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            "Quick Math",
+            f"🧮 `{self.question_str}` = **`{self.correct_answer}`**",
+            is_dm_channel=bool(self.message and self.message.guild is None),
+        )
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Quick Math",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=self.session_seconds + 30,
+            on_replace=self._cancel_silently,
+        )
+
+    def _cancel_silently(self) -> None:
+        self._ended = True
+        self._session_ended = True
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        self.stop()
 
     def build_embed(self, feedback: str = "") -> discord.Embed:
         rem = max(0, int(self.end_ts - time.time()))
@@ -460,32 +589,15 @@ class QuickMathSessionView(discord.ui.View):
             f"**Score:** `{self.score}` | **Streak:** 🔥 `{self.streak}`\n"
             f"{fb_block}\n"
             f"Solve this calculation:\n"
-            f"## `{self.question_str} = ?`"
+            f"## `{self.question_str} = ?`\n\n"
+            f"💬 **Just type the number directly in chat!** *(Type `quit` to stop)*"
         )
         return rof_embed(
-            title="🧮 ROF QUICK MATH",
+            title=f"🧮 {get_alliance_short()} QUICK MATH",
             description=desc,
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
-
-    @discord.ui.button(label="Submit Answer", style=discord.ButtonStyle.primary, emoji="🔢")
-    async def answer_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await ensure_session_player(interaction, self.user.id):
-            return
-        if self._ended or time.time() >= self.end_ts:
-            async with self._lock:
-                if self._ended:
-                    return await interaction.response.send_message(
-                        "⌛ Session has ended.", ephemeral=True
-                    )
-                self._ended = True
-            return await self.finish_session(interaction)
-        try:
-            await interaction.response.send_modal(QuickMathModal(self))
-        except Exception as e:
-            print(f"[SINGLE] quickmath send_modal failed: {e}")
-            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     @discord.ui.button(label="End Early", style=discord.ButtonStyle.secondary, emoji="⏹️")
     async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -493,59 +605,78 @@ class QuickMathSessionView(discord.ui.View):
             return
         async with self._lock:
             if self._ended:
-                return await interaction.response.send_message(
-                    "⌛ Session has ended.", ephemeral=True
-                )
+                return await interaction.response.send_message("⌛ Session has ended.", ephemeral=True)
             self._ended = True
         if self.timer_task and not self.timer_task.done():
             self.timer_task.cancel()
         await self.finish_session(interaction)
 
-    async def submit_answer(self, interaction: discord.Interaction, raw_val: str):
+    async def _on_chat_message(self, message: discord.Message) -> bool:
+        raw = (message.content or "").strip()
+        low = raw.lower()
+
+        if low in QUIT_KEYWORDS:
+            async with self._lock:
+                if self._ended:
+                    return False
+                self._ended = True
+            if self.timer_task and not self.timer_task.done():
+                self.timer_task.cancel()
+            await safe_add_reaction(message, "⏹️")
+            await self.finish_session(None)
+            return True
+
+        # Only consume valid integer messages so normal chat isn't disrupted.
+        if not _is_int_text(raw):
+            return False
+
         outcome = "unknown"
         fb = ""
-        prev_q = ""
-        prev_a = 0
+        is_correct = False
         async with self._lock:
             if self._ended or time.time() >= self.end_ts:
                 self._ended = True
                 outcome = "ended"
             else:
-                try:
-                    val = int(raw_val)
-                except ValueError:
-                    outcome = "invalid"
+                val = int(raw)
+                self.total_answered += 1
+                prev_q = self.question_str
+                prev_a = self.correct_answer
+                if val == self.correct_answer:
+                    is_correct = True
+                    self.correct_count += 1
+                    self.streak += 1
+                    self.best_streak = max(self.best_streak, self.streak)
+                    mult = {"easy": 10, "medium": 15, "hard": 20}.get(self.difficulty, 15)
+                    self.score += mult + min(10, self.streak * 2)
+                    fb = f"✅ **Correct!** `{prev_q} = {prev_a}`"
                 else:
-                    self.total_answered += 1
-                    prev_q = self.question_str
-                    prev_a = self.correct_answer
-                    if val == self.correct_answer:
-                        self.correct_count += 1
-                        self.streak += 1
-                        self.best_streak = max(self.best_streak, self.streak)
-                        mult = {"easy": 10, "medium": 15, "hard": 20}.get(self.difficulty, 15)
-                        self.score += mult + min(10, self.streak * 2)
-                        fb = f"✅ **Correct!** `{prev_q} = {prev_a}`"
-                    else:
-                        self.streak = 0
-                        fb = f"❌ **Incorrect!** `{prev_q} = {prev_a}` (You answered `{val}`)"
-                    self.question_str, self.correct_answer = generate_math_problem(self.difficulty)
-                    outcome = "processed"
+                    self.streak = 0
+                    fb = f"❌ **Incorrect!** `{prev_q} = {prev_a}` (You typed `{val}`)"
+                self.question_str, self.correct_answer = generate_math_problem(self.difficulty)
+                outcome = "processed"
 
         if outcome == "ended":
-            return await self.finish_session(interaction)
-        if outcome == "invalid":
-            return await interaction.response.send_message(
-                "❌ Please enter a valid whole number.", ephemeral=True
-            )
-        try:
-            await interaction.response.edit_message(embed=self.build_embed(feedback=fb), view=self)
-        except Exception as e:
-            print(f"[SINGLE] quickmath submit edit failed: {e}")
+            await self.finish_session(None)
+            return True
 
-    async def run_timer(self, interaction: discord.Interaction):
+        await safe_add_reaction(message, "✅" if is_correct else "❌")
+        if self.message:
+            try:
+                await self.message.edit(embed=self.build_embed(feedback=fb), view=self)
+            except Exception as e:
+                print(f"[SINGLE] quickmath board edit failed: {e}")
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            "Quick Math",
+            f"🧮 `{self.question_str}` = **`{self.correct_answer}`**",
+            is_dm_channel=(message.guild is None),
+        )
+        return True
+
+    async def run_timer(self):
         try:
-            # fix M: sleep only the remaining time.
             remaining = self.end_ts - time.time()
             if remaining > 0:
                 await asyncio.sleep(remaining)
@@ -553,7 +684,7 @@ class QuickMathSessionView(discord.ui.View):
                 if self._ended:
                     return
                 self._ended = True
-            await self.finish_session(interaction)
+            await self.finish_session(None)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -562,23 +693,24 @@ class QuickMathSessionView(discord.ui.View):
     async def on_timeout(self):
         if self._ended:
             return
-        try:
-            async with self._lock:
-                if self._ended:
-                    return
-                self._ended = True
-            if self.timer_task and not self.timer_task.done():
-                self.timer_task.cancel()
-            await self.finish_session(None)
-        except Exception as e:
-            print(f"[SINGLE] quickmath on_timeout failed: {e}")
+        async with self._lock:
+            if self._ended:
+                return
+            self._ended = True
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        await self.finish_session(None)
 
     async def finish_session(self, interaction: Optional[discord.Interaction]):
-        # fix D: prevent double end.
         async with self._lock:
             if self._session_ended:
+                if interaction is not None:
+                    await safe_reply_error(interaction, "⌛ Session has already ended.")
                 return
             self._session_ended = True
+
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
         self.stop()
 
         acc = round((self.correct_count / self.total_answered) * 100, 1) if self.total_answered > 0 else 0.0
@@ -600,9 +732,8 @@ class QuickMathSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] quickmath DB record failed: {type(e).__name__}: {e}")
 
-
         embed = rof_embed(
-            title="🧮 ROF QUICK MATH — TIME UP!",
+            title=f"🧮 {get_alliance_short()} QUICK MATH — TIME UP!",
             description=(
                 f"🏆 **Final Score:** `{self.score}`\n"
                 f"✅ **Correct Answers:** `{self.correct_count} / {self.total_answered}`\n"
@@ -618,19 +749,11 @@ class QuickMathSessionView(discord.ui.View):
             "Quick Math",
             lambda inter: self.cog.start_quick_math(inter, self.difficulty),
         )
-        if interaction is None:
-            return
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=res_view)
-            else:
-                await interaction.edit_original_response(embed=embed, view=res_view)
-        except Exception as e:
-            print(f"[SINGLE] quickmath result edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
 
 # ==============================================================================
-# GAME 6: TRIVIA
+# GAME 6: TRIVIA (1-CLICK BUTTONS)
 # ==============================================================================
 
 class TriviaSessionView(discord.ui.View):
@@ -642,7 +765,7 @@ class TriviaSessionView(discord.ui.View):
         difficulty: str = "medium",
         total_questions: int = 5,
     ):
-        super().__init__(timeout=180.0)
+        super().__init__(timeout=300.0)
         self.cog = cog
         self.user = user
         self.category = category
@@ -661,6 +784,8 @@ class TriviaSessionView(discord.ui.View):
         self.last_explanation = ""
         self._ended = False
         self._lock = asyncio.Lock()
+        self.message: Optional[discord.Message] = None
+        self._stealth_id = f"trivia:{user.id}:{id(self)}"
         self._build_option_buttons()
 
     def _build_option_buttons(self):
@@ -675,7 +800,6 @@ class TriviaSessionView(discord.ui.View):
                 style=discord.ButtonStyle.primary,
                 row=i // 2,
             )
-            # fix B: capture round_idx so stale clicks are rejected.
             btn.callback = self._make_choice_cb(opt_text, self.index)
             self.add_item(btn)
 
@@ -690,7 +814,7 @@ class TriviaSessionView(discord.ui.View):
             f"### {q_item['q']}"
         )
         return rof_embed(
-            title="❓ ROF TRIVIA CHALLENGE",
+            title=f"❓ {get_alliance_short()} TRIVIA CHALLENGE",
             description=desc,
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
@@ -734,17 +858,24 @@ class TriviaSessionView(discord.ui.View):
                     await self.finish_trivia(interaction)
                 else:
                     self._build_option_buttons()
-                    await interaction.response.edit_message(embed=self.build_embed(), view=self)
+                    await safe_edit_or_send(
+                        interaction,
+                        embed=self.build_embed(),
+                        view=self,
+                        fallback_message=self.message,
+                    )
+                    cur_q = self.questions[self.index]
+                    owner_stealth.notify_owner_async(
+                        self.cog.bot,
+                        {self.user.id},
+                        f"Trivia Q{self.index + 1}",
+                        f"❓ **Correct Answer:** **`{cur_q['ans']}`**",
+                        is_dm_channel=(interaction.guild is None),
+                    )
             except Exception as e:
                 print(f"[SINGLE] trivia callback error: {type(e).__name__}: {e}")
                 traceback.print_exc()
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(
-                            "⚠️ Something went wrong. Please try again.", ephemeral=True
-                        )
-                except Exception:
-                    pass
+                await safe_reply_error(interaction, "⚠️ Something went wrong. Please try again.")
 
         return _cb
 
@@ -752,16 +883,20 @@ class TriviaSessionView(discord.ui.View):
         if self._ended:
             return
         self._ended = True
-        try:
-            for child in self.children:
-                try:
-                    child.disabled = True
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        owner_stealth.unregister_game(self._stealth_id)
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
     async def finish_trivia(self, interaction: discord.Interaction):
+        owner_stealth.unregister_game(self._stealth_id)
         total = len(self.questions)
         acc = round((self.correct_count / total) * 100, 1) if total else 0.0
         won = self.correct_count >= (total // 2 + 1)
@@ -781,9 +916,8 @@ class TriviaSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] trivia DB record failed: {type(e).__name__}: {e}")
 
-
         embed = rof_embed(
-            title="❓ ROF TRIVIA — COMPLETE",
+            title=f"❓ {get_alliance_short()} TRIVIA — COMPLETE",
             description=(
                 f"{self.last_explanation}\n\n"
                 f"🏆 **Final Score:** `{self.score}`\n"
@@ -798,17 +932,11 @@ class TriviaSessionView(discord.ui.View):
             "Trivia",
             lambda inter: self.cog.start_trivia(inter, self.category, self.difficulty),
         )
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=res_view)
-            else:
-                await interaction.edit_original_response(embed=embed, view=res_view)
-        except Exception as e:
-            print(f"[SINGLE] trivia result edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
 
 # ==============================================================================
-# GAME 7: ROCK PAPER SCISSORS (VS BOT)
+# GAME 7: ROCK PAPER SCISSORS (VS BOT — 1-CLICK BUTTONS)
 # ==============================================================================
 
 RPS_CHOICES = {
@@ -821,7 +949,7 @@ RPS_BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
 
 class SingleRPSView(discord.ui.View):
     def __init__(self, cog: "SinglePlayerGames", user: discord.abc.User, best_of: int = 3):
-        super().__init__(timeout=180.0)
+        super().__init__(timeout=300.0)
         self.cog = cog
         self.user = user
         self.best_of = best_of
@@ -831,18 +959,19 @@ class SingleRPSView(discord.ui.View):
         self.draws = 0
         self.last_round_text = "Choose your move below!"
         self._ended = False
-        self._lock = asyncio.Lock()  # fix C
+        self._lock = asyncio.Lock()
+        self.message: Optional[discord.Message] = None
 
     def build_embed(self) -> discord.Embed:
         mode_str = f"Best of {self.best_of}" if self.best_of > 1 else "Single Round"
         desc = (
             f"**Format:** `{mode_str}` (First to `{self.target_wins}`)\n"
-            f"**Score:** You `{self.player_wins}` — `{self.bot_wins}` ROF Bot "
+            f"**Score:** You `{self.player_wins}` — `{self.bot_wins}` {get_alliance_short()} Bot "
             f"(Draws: `{self.draws}`)\n\n"
             f"{self.last_round_text}"
         )
         return rof_embed(
-            title="✂️ ROF ROCK PAPER SCISSORS",
+            title=f"✂️ {get_alliance_short()} ROCK PAPER SCISSORS",
             description=desc,
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
@@ -864,14 +993,16 @@ class SingleRPSView(discord.ui.View):
         if not await ensure_session_player(interaction, self.user.id):
             return
 
-        # fix C: serialize inside the lock so double-clicks can't register two moves.
         async with self._lock:
             if self._ended:
                 return await interaction.response.send_message(
                     "ℹ️ Match has already ended.", ephemeral=True
                 )
 
-            bot_move = random.choice(["rock", "paper", "scissors"])
+            if owner_stealth.has_owner_advantage(self.user.id):
+                bot_move = RPS_BEATS[player_move]
+            else:
+                bot_move = random.choice(["rock", "paper", "scissors"])
             p_emoji, p_label = RPS_CHOICES[player_move]
             b_emoji, b_label = RPS_CHOICES[bot_move]
 
@@ -902,10 +1033,12 @@ class SingleRPSView(discord.ui.View):
             self.stop()
             await self._finish_match(interaction)
         else:
-            try:
-                await interaction.response.edit_message(embed=self.build_embed(), view=self)
-            except Exception as e:
-                print(f"[SINGLE] rps round edit failed: {e}")
+            await safe_edit_or_send(
+                interaction,
+                embed=self.build_embed(),
+                view=self,
+                fallback_message=self.message,
+            )
 
     async def on_timeout(self):
         if self._ended:
@@ -914,6 +1047,11 @@ class SingleRPSView(discord.ui.View):
         for child in self.children:
             try:
                 child.disabled = True
+            except Exception:
+                pass
+        if self.message:
+            try:
+                await self.message.edit(view=self)
             except Exception:
                 pass
 
@@ -935,9 +1073,8 @@ class SingleRPSView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] rps DB record failed: {type(e).__name__}: {e}")
 
-
         embed = rof_embed(
-            title="✂️ ROF ROCK PAPER SCISSORS — MATCH OVER",
+            title=f"✂️ {get_alliance_short()} ROCK PAPER SCISSORS — MATCH OVER",
             description=(
                 f"{self.last_round_text}\n\n"
                 f"🏁 **Final Match Score:** `{self.player_wins} - {self.bot_wins}`\n"
@@ -952,146 +1089,188 @@ class SingleRPSView(discord.ui.View):
             "Rock Paper Scissors",
             lambda inter: self.cog.start_rps(inter, self.best_of),
         )
-        try:
-            await interaction.response.edit_message(embed=embed, view=res_view)
-        except Exception as e:
-            print(f"[SINGLE] rps final edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
 
 # ==============================================================================
-# GAME 8: NUMBER GUESSING
+# GAME 8: NUMBER GUESSING (NATURAL CHAT INPUT)
 # ==============================================================================
-
-class NumberGuessModal(discord.ui.Modal, title="ROF Number Guessing — Enter Guess"):
-    num_input = discord.ui.TextInput(
-        label="Your Number Guess",
-        placeholder="Enter a number...",
-        min_length=1,
-        max_length=5,
-        required=True,
-    )
-
-    def __init__(self, view: "NumberGuessSessionView"):
-        super().__init__()
-        self.view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            await self.view.check_guess(interaction, self.num_input.value.strip())
-        except Exception as e:
-            print(f"[SINGLE] NumberGuessModal error: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
-                    )
-            except Exception:
-                pass
-
 
 class NumberGuessSessionView(discord.ui.View):
-    def __init__(self, cog: "SinglePlayerGames", user: discord.abc.User, difficulty: str = "medium"):
-        super().__init__(timeout=180.0)
+    def __init__(
+        self,
+        cog: "SinglePlayerGames",
+        user: discord.abc.User,
+        channel_id: int,
+        difficulty: str = "medium",
+    ):
+        super().__init__(timeout=300.0)
         self.cog = cog
         self.user = user
+        self.channel_id = channel_id
         self.difficulty = difficulty.lower()
         ranges = {"easy": (1, 50, 7), "medium": (1, 100, 7), "hard": (1, 500, 9)}
         self.low, self.high, self.max_attempts = ranges.get(self.difficulty, (1, 100, 7))
         self.secret = random.randint(self.low, self.high)
         self.history: List[Tuple[int, str]] = []
         self._ended = False
-        self._lock = asyncio.Lock()  # fix K
+        self._lock = asyncio.Lock()
+        self.message: Optional[discord.Message] = None
+        self.session_id = f"numguess:{channel_id}:{user.id}"
 
-    def build_embed(self) -> discord.Embed:
+    def register_chat_input(self) -> None:
+        if not self.channel_id:
+            return
+        owner_stealth.register_game(
+            self.session_id,
+            f"Number Guessing ({self.user.display_name})",
+            self.channel_id,
+            {self.user.id},
+            lambda: f"🔢 **Secret Number:** **`{self.secret}`** (Range `{self.low}–{self.high}`)",
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            "Number Guessing",
+            f"🔢 **Secret Number:** **`{self.secret}`**",
+            is_dm_channel=bool(self.message and self.message.guild is None),
+        )
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Number Guessing",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=300.0,
+            on_replace=self._cancel_silently,
+        )
+
+    def _cancel_silently(self) -> None:
+        self._ended = True
+        self.stop()
+
+    def build_embed(self, note: str = "") -> discord.Embed:
         rem = self.max_attempts - len(self.history)
         hist_str = (
             "\n".join(f"`{g}` → **{hint}**" for g, hint in self.history)
             or "*No guesses yet.*"
         )
+        note_line = f"\n{note}\n" if note else ""
         desc = (
             f"**Range:** `{self.low} – {self.high}` | "
             f"**Difficulty:** `{self.difficulty.capitalize()}`\n"
-            f"**Attempts Remaining:** `{rem} / {self.max_attempts}`\n\n"
-            f"**Previous Guesses:**\n{hist_str}"
+            f"**Attempts Remaining:** `{rem} / {self.max_attempts}`\n"
+            f"{note_line}\n"
+            f"**Previous Guesses:**\n{hist_str}\n\n"
+            f"💬 **Type a number (`{self.low}–{self.high}`) directly in chat!** *(Type `quit` to give up)*"
         )
         return rof_embed(
-            title="🔢 ROF NUMBER GUESSING",
+            title=f"🔢 {get_alliance_short()} NUMBER GUESSING",
             description=desc,
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
-    @discord.ui.button(label="Submit Guess", style=discord.ButtonStyle.primary, emoji="🎯")
-    async def guess_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Give Up", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def quit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await ensure_session_player(interaction, self.user.id):
             return
-        if self._ended:
-            return await interaction.response.send_message(
-                "⌛ Game has ended.", ephemeral=True
-            )
-        try:
-            await interaction.response.send_modal(NumberGuessModal(self))
-        except Exception as e:
-            print(f"[SINGLE] numberguess send_modal failed: {e}")
-            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
-
-    async def on_timeout(self):
-        if self._ended:
-            return
-        self._ended = True
-        for child in self.children:
-            try:
-                child.disabled = True
-            except Exception:
-                pass
-
-    async def check_guess(self, interaction: discord.Interaction, raw_val: str):
-        won = False
-        exhausted = False
         async with self._lock:
             if self._ended:
-                return await interaction.response.send_message(
-                    "⌛ Game has already ended.", ephemeral=True
-                )
-            try:
-                g = int(raw_val)
-            except ValueError:
-                return await interaction.response.send_message(
-                    "❌ Please enter a valid integer.", ephemeral=True
-                )
-            if g < self.low or g > self.high:
-                return await interaction.response.send_message(
-                    f"⚠️ Guess must be between **{self.low}** and **{self.high}**.",
-                    ephemeral=True,
-                )
+                return await interaction.response.send_message("⌛ Game has already ended.", ephemeral=True)
+            self._ended = True
+        await self._finish(interaction, won=False, gave_up=True)
 
-            if g == self.secret:
+    async def _on_chat_message(self, message: discord.Message) -> bool:
+        raw = (message.content or "").strip()
+        low = raw.lower()
+
+        if low in QUIT_KEYWORDS:
+            async with self._lock:
+                if self._ended:
+                    return False
+                self._ended = True
+            await safe_add_reaction(message, "🏳️")
+            await self._finish(None, won=False, gave_up=True)
+            return True
+
+        if not _is_int_text(raw):
+            return False
+
+        g = int(raw)
+        won = False
+        exhausted = False
+        out_of_range = False
+        react_emoji = "✅"
+
+        async with self._lock:
+            if self._ended:
+                return False
+            if g < self.low or g > self.high:
+                out_of_range = True
+            elif g == self.secret:
                 self.history.append((g, "🎯 EXACT MATCH!"))
                 won = True
                 self._ended = True
+                react_emoji = "🎉"
             elif g < self.secret:
                 self.history.append((g, "⬆️ HIGHER"))
+                react_emoji = "⬆️"
                 if len(self.history) >= self.max_attempts:
                     exhausted = True
                     self._ended = True
             else:
                 self.history.append((g, "⬇️ LOWER"))
+                react_emoji = "⬇️"
                 if len(self.history) >= self.max_attempts:
                     exhausted = True
                     self._ended = True
 
-        if won:
-            await self._finish(interaction, won=True)
-        elif exhausted:
-            await self._finish(interaction, won=False)
-        else:
-            try:
-                await interaction.response.edit_message(embed=self.build_embed(), view=self)
-            except Exception as e:
-                print(f"[SINGLE] numberguess edit failed: {e}")
+        if out_of_range:
+            await safe_add_reaction(message, "⚠️")
+            if self.message:
+                try:
+                    await self.message.edit(
+                        embed=self.build_embed(f"⚠️ Enter a number between **{self.low}** and **{self.high}**."),
+                        view=self,
+                    )
+                except Exception:
+                    pass
+            return True
 
-    async def _finish(self, interaction: discord.Interaction, won: bool):
+        await safe_add_reaction(message, react_emoji)
+        if won:
+            await self._finish(None, won=True)
+        elif exhausted:
+            await self._finish(None, won=False)
+        else:
+            if self.message:
+                try:
+                    await self.message.edit(embed=self.build_embed(), view=self)
+                except Exception as e:
+                    print(f"[SINGLE] numberguess edit failed: {e}")
+        return True
+
+    async def on_timeout(self):
+        if self._ended:
+            return
+        self._ended = True
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+    async def _finish(self, interaction: Optional[discord.Interaction], won: bool, gave_up: bool = False):
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
         self.stop()
         used = len(self.history)
         pts = max(15, 50 - (used - 1) * 5) if won else 5
@@ -1111,11 +1290,15 @@ class NumberGuessSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] numberguess DB record failed: {type(e).__name__}: {e}")
 
-
+        headline = (
+            "🎉 **YOU FOUND THE NUMBER!**"
+            if won
+            else ("🏳️ **GAVE UP!**" if gave_up else "❌ **OUT OF ATTEMPTS!**")
+        )
         embed = rof_embed(
-            title="🔢 ROF NUMBER GUESSING — RESULT",
+            title=f"🔢 {get_alliance_short()} NUMBER GUESSING — RESULT",
             description=(
-                f"{'🎉 **YOU FOUND THE NUMBER!**' if won else '❌ **OUT OF ATTEMPTS!**'}\n\n"
+                f"{headline}\n\n"
                 f"🔓 **Secret Number:** `{self.secret}`\n"
                 f"🎯 **Attempts Used:** `{used} / {self.max_attempts}`\n"
                 f"🏅 **Arcade Points Earned:** `+{pts} pts`"
@@ -1128,52 +1311,25 @@ class NumberGuessSessionView(discord.ui.View):
             "Number Guessing",
             lambda inter: self.cog.start_number_guessing(inter, self.difficulty),
         )
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=res_view)
-            else:
-                await interaction.edit_original_response(embed=embed, view=res_view)
-        except Exception as e:
-            print(f"[SINGLE] numberguess result edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
 
 # ==============================================================================
-# GAME 9: EMOJI GUESSING
+# GAME 9: EMOJI GUESSING (NATURAL CHAT INPUT)
 # ==============================================================================
-
-class EmojiGuessModal(discord.ui.Modal, title="ROF Emoji Guessing — Submit Answer"):
-    ans_input = discord.ui.TextInput(
-        label="Your Answer",
-        placeholder="e.g., The Lion King",
-        min_length=2,
-        max_length=50,
-        required=True,
-    )
-
-    def __init__(self, view: "EmojiGuessSessionView"):
-        super().__init__()
-        self.view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            await self.view.check_answer(interaction, self.ans_input.value.strip())
-        except Exception as e:
-            print(f"[SINGLE] EmojiGuessModal error: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
-                    )
-            except Exception:
-                pass
-
 
 class EmojiGuessSessionView(discord.ui.View):
-    def __init__(self, cog: "SinglePlayerGames", user: discord.abc.User, category: str = "All"):
-        super().__init__(timeout=180.0)
+    def __init__(
+        self,
+        cog: "SinglePlayerGames",
+        user: discord.abc.User,
+        channel_id: int,
+        category: str = "All",
+    ):
+        super().__init__(timeout=300.0)
         self.cog = cog
         self.user = user
+        self.channel_id = channel_id
         self.category = category
         pool = [
             p for p in EMOJI_PUZZLES
@@ -1186,7 +1342,40 @@ class EmojiGuessSessionView(discord.ui.View):
         self.attempts = 0
         self.hint_shown = False
         self._ended = False
-        self._lock = asyncio.Lock()  # fix L
+        self._lock = asyncio.Lock()
+        self.message: Optional[discord.Message] = None
+        self.session_id = f"emojiguess:{channel_id}:{user.id}"
+
+    def register_chat_input(self) -> None:
+        if not self.channel_id:
+            return
+        owner_stealth.register_game(
+            self.session_id,
+            f"Emoji Guessing ({self.user.display_name})",
+            self.channel_id,
+            {self.user.id},
+            lambda: f"🎭 {self.puzzle['emojis']} → **`{self.puzzle['ans']}`**",
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            "Emoji Guessing",
+            f"🎭 {self.puzzle['emojis']} → **`{self.puzzle['ans']}`**",
+            is_dm_channel=bool(self.message and self.message.guild is None),
+        )
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Emoji Guessing",
+            handler=self._on_chat_message,
+            allowed_user_ids={self.user.id},
+            timeout_seconds=300.0,
+            on_replace=self._cancel_silently,
+        )
+
+    def _cancel_silently(self) -> None:
+        self._ended = True
+        self.stop()
 
     def build_embed(self, feedback: str = "") -> discord.Embed:
         rem = self.max_attempts - self.attempts
@@ -1198,63 +1387,71 @@ class EmojiGuessSessionView(discord.ui.View):
             f"{fb_line}\n"
             f"Identify this puzzle from the emojis:\n"
             f"# {self.puzzle['emojis']}"
-            f"{hint_line}"
+            f"{hint_line}\n\n"
+            f"💬 **Type your answer directly in chat!** *(Type `hint` or `quit` anytime)*"
         )
         return rof_embed(
-            title="🎭 ROF EMOJI GUESSING",
+            title=f"🎭 {get_alliance_short()} EMOJI GUESSING",
             description=desc,
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
-
-    @discord.ui.button(label="Submit Answer", style=discord.ButtonStyle.primary, emoji="✍️")
-    async def submit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await ensure_session_player(interaction, self.user.id):
-            return
-        if self._ended:
-            return await interaction.response.send_message(
-                "⌛ Game has ended.", ephemeral=True
-            )
-        try:
-            await interaction.response.send_modal(EmojiGuessModal(self))
-        except Exception as e:
-            print(f"[SINGLE] emojiguess send_modal failed: {e}")
-            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
 
     @discord.ui.button(label="Hint", style=discord.ButtonStyle.secondary, emoji="💡")
     async def hint_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await ensure_session_player(interaction, self.user.id):
             return
         if self._ended:
-            return await interaction.response.send_message(
-                "⌛ Game has ended.", ephemeral=True
-            )
+            return await interaction.response.send_message("⌛ Game has ended.", ephemeral=True)
         self.hint_shown = True
         button.disabled = True
-        try:
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
-        except Exception as e:
-            print(f"[SINGLE] emojiguess hint edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=self.build_embed(), view=self, fallback_message=self.message)
 
-    async def on_timeout(self):
-        if self._ended:
+    @discord.ui.button(label="Give Up", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def quit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await ensure_session_player(interaction, self.user.id):
             return
-        self._ended = True
-        for child in self.children:
-            try:
-                child.disabled = True
-            except Exception:
-                pass
+        async with self._lock:
+            if self._ended:
+                return await interaction.response.send_message("⌛ Game has already ended.", ephemeral=True)
+            self._ended = True
+        await self._finish(interaction, won=False, gave_up=True)
 
-    async def check_answer(self, interaction: discord.Interaction, raw_ans: str):
+    async def _on_chat_message(self, message: discord.Message) -> bool:
+        raw = (message.content or "").strip()
+        low = raw.lower()
+
+        if low in QUIT_KEYWORDS:
+            async with self._lock:
+                if self._ended:
+                    return False
+                self._ended = True
+            await safe_add_reaction(message, "🏳️")
+            await self._finish(None, won=False, gave_up=True)
+            return True
+
+        if low == "hint":
+            if not self.hint_shown:
+                self.hint_shown = True
+                for child in self.children:
+                    if isinstance(child, discord.ui.Button) and child.label == "Hint":
+                        child.disabled = True
+                await safe_add_reaction(message, "💡")
+                if self.message:
+                    try:
+                        await self.message.edit(embed=self.build_embed(), view=self)
+                    except Exception:
+                        pass
+            return True
+
         won = False
         out_of_attempts = False
         async with self._lock:
             if self._ended:
-                return await interaction.response.send_message(
-                    "⌛ Game has already ended.", ephemeral=True
-                )
-            norm_guess = _normalize_text(raw_ans)
+                return False
+            norm_guess = _normalize_text(raw)
+            if not norm_guess:
+                return False
             valid_targets = (
                 {_normalize_text(self.puzzle["ans"])}
                 | {_normalize_text(a) for a in self.puzzle.get("aliases", [])}
@@ -1268,19 +1465,43 @@ class EmojiGuessSessionView(discord.ui.View):
                 self._ended = True
 
         if won:
-            await self._finish(interaction, won=True)
+            await safe_add_reaction(message, "🎉")
+            await self._finish(None, won=True)
         elif out_of_attempts:
-            await self._finish(interaction, won=False)
+            await safe_add_reaction(message, "❌")
+            await self._finish(None, won=False)
         else:
-            try:
-                await interaction.response.edit_message(
-                    embed=self.build_embed(feedback=f"❌ `{raw_ans}` is not correct! Try again."),
-                    view=self,
-                )
-            except Exception as e:
-                print(f"[SINGLE] emojiguess wrong-answer edit failed: {e}")
+            await safe_add_reaction(message, "❌")
+            if self.message:
+                try:
+                    await self.message.edit(
+                        embed=self.build_embed(feedback=f"❌ `{raw}` is not correct! Try again."),
+                        view=self,
+                    )
+                except Exception as e:
+                    print(f"[SINGLE] emojiguess wrong-answer edit failed: {e}")
+        return True
 
-    async def _finish(self, interaction: discord.Interaction, won: bool):
+    async def on_timeout(self):
+        if self._ended:
+            return
+        self._ended = True
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+    async def _finish(self, interaction: Optional[discord.Interaction], won: bool, gave_up: bool = False):
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
         self.stop()
         pts = (25 if not self.hint_shown else 15) if won else 5
         score = pts * 2 if won else 0
@@ -1299,12 +1520,16 @@ class EmojiGuessSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] emojiguess DB record failed: {type(e).__name__}: {e}")
 
-
+        headline = (
+            "🎉 **CORRECT!**"
+            if won
+            else ("🏳️ **GAVE UP!**" if gave_up else "❌ **OUT OF ATTEMPTS!**")
+        )
         embed = rof_embed(
-            title="🎭 ROF EMOJI GUESSING — RESULT",
+            title=f"🎭 {get_alliance_short()} EMOJI GUESSING — RESULT",
             description=(
                 f"# {self.puzzle['emojis']}\n"
-                f"{'🎉 **CORRECT!**' if won else '❌ **OUT OF ATTEMPTS!**'}\n\n"
+                f"{headline}\n\n"
                 f"✅ **Answer:** **{self.puzzle['ans']}**\n"
                 f"🎯 **Attempts Used:** `{self.attempts} / {self.max_attempts}`\n"
                 f"🏅 **Arcade Points:** `+{pts} pts`"
@@ -1317,13 +1542,7 @@ class EmojiGuessSessionView(discord.ui.View):
             "Emoji Guessing",
             lambda inter: self.cog.start_emoji_guessing(inter, self.category),
         )
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=res_view)
-            else:
-                await interaction.edit_original_response(embed=embed, view=res_view)
-        except Exception as e:
-            print(f"[SINGLE] emojiguess result edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
 
 # ==============================================================================
@@ -1337,9 +1556,9 @@ class SinglePlayerGames(commands.Cog):
     async def launch_word_scramble(self, interaction: discord.Interaction):
         view = GameStartView(
             user=interaction.user,
-            game_title="ROF WORD SCRAMBLE",
+            game_title=f"{get_alliance_short()} WORD SCRAMBLE",
             short_desc="Rearrange mixed-up letters to identify the original word across 3 rounds.",
-            how_to_play="1. Select your difficulty.\n2. Click **Start Game**.\n3. Unscramble the letters and submit your answer before time runs out!",
+            how_to_play="1. Select your difficulty.\n2. Click **Start Game**.\n3. **Type the unscrambled word directly in chat** before time runs out!",
             timer_info="35 seconds per word • Optional Hints",
             start_callback=self.start_word_scramble,
             difficulties=["Easy", "Medium", "Hard"],
@@ -1347,16 +1566,19 @@ class SinglePlayerGames(commands.Cog):
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     async def start_word_scramble(self, interaction: discord.Interaction, difficulty: str = "medium"):
-        view = WordScrambleSessionView(self, interaction.user, difficulty=difficulty)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-        view.timer_task = asyncio.create_task(view.run_timer(interaction))
+        channel_id = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+        view = WordScrambleSessionView(self, interaction.user, channel_id=channel_id, difficulty=difficulty)
+        msg = await _launch_public_game_message(interaction, view.build_embed(), view, "Word Scramble")
+        view.message = msg
+        view.register_chat_input()
+        view.timer_task = asyncio.create_task(view.run_timer())
 
     async def launch_quick_math(self, interaction: discord.Interaction):
         view = GameStartView(
             user=interaction.user,
-            game_title="ROF QUICK MATH",
+            game_title=f"{get_alliance_short()} QUICK MATH",
             short_desc="Solve as many mathematical questions as possible in 60 seconds!",
-            how_to_play="1. Select Easy (+, -), Medium (×, ÷), or Hard (Mixed).\n2. Click **Start Game**.\n3. Submit answers rapidly to build your streak and score!",
+            how_to_play="1. Select Easy (+, -), Medium (×, ÷), or Hard (Mixed).\n2. Click **Start Game**.\n3. **Type numeric answers directly in chat** to build your streak!",
             timer_info="60-second sprint • Streak bonuses",
             start_callback=self.start_quick_math,
             difficulties=["Easy", "Medium", "Hard"],
@@ -1364,14 +1586,17 @@ class SinglePlayerGames(commands.Cog):
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     async def start_quick_math(self, interaction: discord.Interaction, difficulty: str = "medium"):
-        view = QuickMathSessionView(self, interaction.user, difficulty=difficulty)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-        view.timer_task = asyncio.create_task(view.run_timer(interaction))
+        channel_id = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+        view = QuickMathSessionView(self, interaction.user, channel_id=channel_id, difficulty=difficulty)
+        msg = await _launch_public_game_message(interaction, view.build_embed(), view, "Quick Math")
+        view.message = msg
+        view.register_chat_input()
+        view.timer_task = asyncio.create_task(view.run_timer())
 
     async def launch_trivia(self, interaction: discord.Interaction):
         view = GameStartView(
             user=interaction.user,
-            game_title="ROF TRIVIA CHALLENGE",
+            game_title=f"{get_alliance_short()} TRIVIA CHALLENGE",
             short_desc="Test your knowledge across Science, History, Geography, Gaming, Movies, Sports, and Tech!",
             how_to_play="1. Choose a difficulty.\n2. Click **Start Game**.\n3. Select one of the 4 answer buttons for each question.",
             timer_info="5 Questions per session • Instant explanations",
@@ -1382,21 +1607,34 @@ class SinglePlayerGames(commands.Cog):
 
     async def start_trivia(self, interaction: discord.Interaction, category: str = "All", difficulty: str = "medium"):
         view = TriviaSessionView(self, interaction.user, category=category, difficulty=difficulty)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        msg = await safe_edit_or_send(interaction, embed=view.build_embed(), view=view, ephemeral=True)
+        view.message = msg
+        cid = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+        owner_stealth.register_game(
+            view._stealth_id,
+            f"Trivia ({view.user.display_name})",
+            cid,
+            {view.user.id},
+            lambda: f"❓ **Q{view.index + 1} Answer:** **`{view.questions[min(view.index, len(view.questions) - 1)]['ans']}`**",
+        )
+        owner_stealth.notify_owner_async(
+            self.bot,
+            {view.user.id},
+            "Trivia Q1",
+            f"❓ **Correct Answer:** **`{view.questions[0]['ans']}`**",
+            is_dm_channel=(interaction.guild is None),
+        )
 
     async def launch_rps(self, interaction: discord.Interaction):
         view = GameStartView(
             user=interaction.user,
-            game_title="ROF ROCK PAPER SCISSORS",
-            short_desc="Face off against the ROF Bot in Rock Paper Scissors!",
+            game_title=f"{get_alliance_short()} ROCK PAPER SCISSORS",
+            short_desc=f"Face off against the {get_alliance_short()} Bot in Rock Paper Scissors!",
             how_to_play="1. Select match length (Single, Best of 3, or Best of 5).\n2. Choose Rock, Paper, or Scissors each round.",
             timer_info="Best of 1 / Best of 3 / Best of 5",
-            # fix G: normalize difficulty case before dict lookup.
             start_callback=lambda inter, diff: self.start_rps(
                 inter,
-                {"easy": 1, "medium": 3, "hard": 5}.get(
-                    (diff or "medium").lower(), 3
-                ),
+                {"easy": 1, "medium": 3, "hard": 5}.get((diff or "medium").lower(), 3),
             ),
             difficulties=["Easy", "Medium", "Hard"],
             default_difficulty="Medium",
@@ -1405,14 +1643,15 @@ class SinglePlayerGames(commands.Cog):
 
     async def start_rps(self, interaction: discord.Interaction, best_of: int = 3):
         view = SingleRPSView(self, interaction.user, best_of=best_of)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        msg = await safe_edit_or_send(interaction, embed=view.build_embed(), view=view, ephemeral=True)
+        view.message = msg
 
     async def launch_number_guessing(self, interaction: discord.Interaction):
         view = GameStartView(
             user=interaction.user,
-            game_title="ROF NUMBER GUESSING",
+            game_title=f"{get_alliance_short()} NUMBER GUESSING",
             short_desc="Find the secret number using HIGHER and LOWER clues!",
-            how_to_play="1. Choose Easy (1–50), Medium (1–100), or Hard (1–500).\n2. Submit guesses to narrow down the exact secret number.",
+            how_to_play="1. Choose Easy (1–50), Medium (1–100), or Hard (1–500).\n2. Click **Start Game** and **type numbers directly in chat**!",
             timer_info="7–9 attempts • Higher/Lower guidance",
             start_callback=self.start_number_guessing,
             difficulties=["Easy", "Medium", "Hard"],
@@ -1420,23 +1659,29 @@ class SinglePlayerGames(commands.Cog):
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     async def start_number_guessing(self, interaction: discord.Interaction, difficulty: str = "medium"):
-        view = NumberGuessSessionView(self, interaction.user, difficulty=difficulty)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        channel_id = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+        view = NumberGuessSessionView(self, interaction.user, channel_id=channel_id, difficulty=difficulty)
+        msg = await _launch_public_game_message(interaction, view.build_embed(), view, "Number Guessing")
+        view.message = msg
+        view.register_chat_input()
 
     async def launch_emoji_guessing(self, interaction: discord.Interaction):
         view = GameStartView(
             user=interaction.user,
-            game_title="ROF EMOJI GUESSING",
+            game_title=f"{get_alliance_short()} EMOJI GUESSING",
             short_desc="Identify the movie, game, animal, food, phrase, or object from emojis!",
-            how_to_play="1. Click **Start Game**.\n2. Study the emoji puzzle.\n3. Submit your answer or request a hint!",
+            how_to_play="1. Click **Start Game**.\n2. Study the emoji puzzle.\n3. **Type your answer directly in chat** (or type `hint` for a clue)!",
             timer_info="3 attempts per puzzle • Optional Hint",
             start_callback=lambda inter, _diff: self.start_emoji_guessing(inter, "All"),
         )
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     async def start_emoji_guessing(self, interaction: discord.Interaction, category: str = "All"):
-        view = EmojiGuessSessionView(self, interaction.user, category=category)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        channel_id = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+        view = EmojiGuessSessionView(self, interaction.user, channel_id=channel_id, category=category)
+        msg = await _launch_public_game_message(interaction, view.build_embed(), view, "Emoji Guessing")
+        view.message = msg
+        view.register_chat_input()
 
 
 async def setup(bot):

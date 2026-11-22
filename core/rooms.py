@@ -6,7 +6,7 @@ import time
 import discord
 from typing import Callable, Dict, List, Optional
 from core.config import ROFColors
-from core.ui import rof_embed
+from core.ui import get_alliance_short, rof_embed
 
 
 class MultiplayerRoom:
@@ -47,8 +47,9 @@ class RoomManager:
         self.single_player_sessions: Dict[str, set] = {}  # game_key -> set of user_ids
 
     def generate_room_id(self) -> str:
+        raw_tag = "".join(ch for ch in get_alliance_short().upper() if ch.isalnum())[:6] or "ALLIANCE"
         while True:
-            rid = "ROF-" + "".join(random.choices(string.digits, k=4))
+            rid = f"{raw_tag}-" + "".join(random.choices(string.digits, k=4))
             if rid not in self.rooms:
                 return rid
 
@@ -58,7 +59,7 @@ class RoomManager:
             age = now - room.created_at
             if (
                 room.status in ("finished", "closed")
-                or (room.status == "waiting" and age > 600)
+                or (room.status == "waiting" and age > 300)
                 or (room.status == "active" and age > 1800)
             ):
                 room.status = "closed"
@@ -157,7 +158,7 @@ class RoomLobbyView(discord.ui.View):
             for i, p in enumerate(self.room.players, 1)
         )
         embed = rof_embed(
-            title=f"🏟️ ROF GAME ROOM — {self.room.game_title.upper()}",
+            title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
             description=desc,
             color=ROFColors.ARENA if self.room.status == "waiting" else ROFColors.PRIMARY,
             footer_extra=f"Room {self.room.room_id}",
@@ -221,7 +222,7 @@ class RoomLobbyView(discord.ui.View):
                 for child in self.children:
                     child.disabled = True
                 embed = rof_embed(
-                    title=f"🏟️ ROF GAME ROOM — {self.room.game_title.upper()}",
+                    title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
                     description=f"🔒 Room `{self.room.room_id}` closed because all players left.",
                     color=ROFColors.ERROR,
                 )
@@ -276,7 +277,7 @@ class RoomLobbyView(discord.ui.View):
             for child in self.children:
                 child.disabled = True
             embed = rof_embed(
-                title=f"🏟️ ROF GAME ROOM — {self.room.game_title.upper()}",
+                title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
                 description=f"🔒 Room `{self.room.room_id}` was closed by the host.",
                 color=ROFColors.ERROR,
             )
@@ -291,7 +292,7 @@ class RoomLobbyView(discord.ui.View):
             if self.room.message:
                 try:
                     embed = rof_embed(
-                        title=f"🏟️ ROF GAME ROOM — {self.room.game_title.upper()}",
+                        title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
                         description=f"⌛ Room `{self.room.room_id}` expired due to inactivity.",
                         color=ROFColors.WARNING,
                     )

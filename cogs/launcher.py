@@ -6,10 +6,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import ROFColors, get_rank
+from core.config import DEFAULT_TZ_OFFSET, ROFColors, format_tz_label, get_rank
 from core.database import db
 from core.rooms import room_manager
-from core.ui import rof_embed
+from core.ui import get_alliance_name, get_alliance_short, rof_embed
 
 
 SINGLE_PLAYER_CATALOG = [
@@ -22,7 +22,7 @@ SINGLE_PLAYER_CATALOG = [
     ("quick_math", "🧮 Quick Math", "Solve rapid calculations in a 60-second sprint"),
     ("reaction_solo", "⚡ Reaction Speed Test", "Measure your reaction speed in milliseconds"),
     ("trivia_solo", "❓ Trivia Challenge", "Answer general knowledge questions across 8 categories"),
-    ("rps_solo", "✂️ Rock Paper Scissors", "Play Single, Best of 3, or Best of 5 against ROF Bot"),
+    ("rps_solo", "✂️ Rock Paper Scissors", "Play Single, Best of 3, or Best of 5 against the Bot"),
     ("number_guess", "🔢 Number Guessing", "Find the secret number using Higher/Lower hints"),
     ("emoji_solo", "🎭 Emoji Guessing", "Identify movies, games, phrases, and objects from emojis"),
 ]
@@ -81,7 +81,7 @@ async def _notify_error(interaction: discord.Interaction, message: str = "⚠️
 
 class SinglePlayerMenuView(discord.ui.View):
     def __init__(self, bot: commands.Bot, user: discord.abc.User):
-        super().__init__(timeout=180.0)
+        super().__init__(timeout=300.0)
         self.bot = bot
         self.user = user
 
@@ -100,7 +100,7 @@ class SinglePlayerMenuView(discord.ui.View):
     def build_embed(self) -> discord.Embed:
         lines = [f"• **{title}** — {desc}" for _, title, desc in SINGLE_PLAYER_CATALOG]
         return rof_embed(
-            title="🎯 ROF GAMING ARENA — SINGLE PLAYER",
+            title=f"🎯 {get_alliance_short()} GAMING ARENA — SINGLE PLAYER",
             description="Select any game from the menu below to start playing immediately:\n\n" + "\n".join(lines),
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
@@ -226,7 +226,7 @@ class SinglePlayerMenuView(discord.ui.View):
 
 class MultiplayerMenuView(discord.ui.View):
     def __init__(self, bot: commands.Bot, user: discord.abc.User):
-        super().__init__(timeout=180.0)
+        super().__init__(timeout=300.0)
         self.bot = bot
         self.user = user
 
@@ -245,7 +245,7 @@ class MultiplayerMenuView(discord.ui.View):
     def build_embed(self) -> discord.Embed:
         lines = [f"• **{title}** — {desc}" for _, title, desc in MULTIPLAYER_CATALOG]
         return rof_embed(
-            title="🏟️ ROF GAMING ARENA — MULTIPLAYER",
+            title=f"🏟️ {get_alliance_short()} GAMING ARENA — MULTIPLAYER",
             description=(
                 "Choose a multiplayer game below to create a **Public Game Room** "
                 "in this channel so alliance members can join:\n\n" + "\n".join(lines)
@@ -341,7 +341,7 @@ class GamingArenaMainView(discord.ui.View):
     """Part 2.1 Central Gaming Main Menu (/games)."""
 
     def __init__(self, bot: commands.Bot, user: discord.abc.User):
-        super().__init__(timeout=240.0)
+        super().__init__(timeout=300.0)
         self.bot = bot
         self.user = user
 
@@ -354,17 +354,18 @@ class GamingArenaMainView(discord.ui.View):
             print(f"[LAUNCHER] list_active_rooms failed: {type(e).__name__}: {e}")
             room_count = 0
 
+        short = get_alliance_short()
         return rof_embed(
-            title="🎮 ROF GAMING ARENA",
+            title=f"🎮 {short} GAMING ARENA",
             description=(
-                "Welcome to the **ROF Gaming Arena**!\n"
+                f"Welcome to the **{short} Gaming Arena**!\n"
                 "Choose how you want to play using the controls below.\n\n"
                 "🎯 **Single Player** — 12 solo skill, puzzle, trivia, and reflex games\n"
                 "🏟️ **Multiplayer** — Create or join live alliance game rooms\n"
                 f"🔥 **Active Games** — `{room_count}` room(s) currently active\n"
                 "🏆 **Leaderboard** — Overall, Weekly, and Per-Game rankings\n"
-                "👤 **My Profile** — Personal win rate, best score, and reaction stats\n"
-                "📖 **Game Help** — Rules and tips for every ROF game"
+                "👤 **My Profile** — Personal win rate, best score, reaction stats & match history\n"
+                f"📖 **Game Help** — Rules and tips for every {short} game"
             ),
             color=ROFColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
@@ -411,7 +412,7 @@ class GamingArenaMainView(discord.ui.View):
 
         if not rooms:
             embed = rof_embed(
-                title="🔥 ROF ACTIVE GAMES",
+                title=f"🔥 {get_alliance_short()} ACTIVE GAMES",
                 description=(
                     "There are no open multiplayer rooms right now.\n"
                     "Click **Multiplayer** to host a new room!"
@@ -435,7 +436,7 @@ class GamingArenaMainView(discord.ui.View):
                 print(f"[LAUNCHER] room render failed: {e}")
 
         embed = rof_embed(
-            title="🔥 ROF ACTIVE MULTIPLAYER ROOMS",
+            title=f"🔥 {get_alliance_short()} ACTIVE MULTIPLAYER ROOMS",
             description="\n".join(lines) or "*No rooms to display.*",
             color=ROFColors.ARENA,
         )
@@ -490,23 +491,26 @@ class GamingArenaMainView(discord.ui.View):
 
 
 def build_game_help_embed() -> discord.Embed:
+    short = get_alliance_short()
     embed = rof_embed(
-        title="📖 ROF GAMING ARENA — COMPLETE GUIDE",
-        description="Every ROF game is designed for fast, interactive play on both desktop and mobile Discord.",
+        title=f"📖 {short} GAMING ARENA — COMPLETE GUIDE",
+        description=f"Every {short} game is designed for fast, interactive play on both desktop and mobile Discord.",
         color=ROFColors.INFO,
     )
     embed.add_field(
         name="🎯 Single-Player Games",
         value=(
-            "• **Wordle (`/wordle`, `/wordle_practice`):** Guess a 5-letter word in 6 tries (`🟩` exact, `🟨` misplaced).\n"
-            "• **Word Scramble:** Unscramble shuffled letters across 3 timed rounds.\n"
-            "• **Memory Challenge (`/memory`):** Reproduce a growing colour sequence (`🔴 🔵 🟢 🟡`) or match 4x4 emoji pairs.\n"
-            "• **Quick Math:** 60-second calculation sprint across Easy, Medium, and Hard modes.\n"
+            "• **Higher or Lower (`/higherlower`):** 1-click streak risk/reward game (1–100).\n"
+            "• **Treasure Hunt (`/treasure`):** 3x3 mining grid — find 7 gems and dodge 2 bombs!\n"
+            "• **Wordle (`/wordle` Daily or Practice):** Just type 5-letter words directly in chat or DM (6 tries: `🟩` exact, `🟨` misplaced).\n"
+            "• **Word Scramble:** Type unscrambled words directly in chat across 3 timed rounds.\n"
+            "• **Memory Challenge (`/memory`):** Reproduce a growing colour sequence (`🔴 🔵 🟢 🟡 🟣 🟠`).\n"
+            "• **Quick Math:** 60-second sprint — just type numbers directly in chat!\n"
             "• **Reaction Speed Test:** Wait for the green **READY** signal and click for millisecond reaction records.\n"
             "• **Trivia:** 8 categories with instant explanations after every question.\n"
-            "• **Rock Paper Scissors:** Single, Best of 3, or Best of 5 vs the ROF Bot.\n"
-            "• **Number Guessing:** Use Higher/Lower hints to pinpoint the secret number.\n"
-            "• **Emoji Guessing:** Decode movies, games, animals, food, and phrases from emojis."
+            f"• **Rock Paper Scissors:** Single, Best of 3, or Best of 5 vs the {short} Bot.\n"
+            "• **Number Guessing:** Type numbers directly in chat using Higher/Lower hints.\n"
+            "• **Emoji Guessing:** Type your answer directly in chat to decode the emojis."
         ),
         inline=False,
     )
@@ -536,7 +540,7 @@ class Launcher(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="games", description="Open the central ROF Gaming Arena menu")
+    @app_commands.command(name="games", description="Open the central Gaming Arena menu")
     async def games_cmd(self, interaction: discord.Interaction):
         try:
             view = GamingArenaMainView(self.bot, interaction.user)
@@ -555,136 +559,59 @@ class Launcher(commands.Cog):
             except Exception:
                 pass
 
-    @app_commands.command(name="help", description="View the complete ROF Bot command & feature guide")
+    @app_commands.command(name="help", description="View the complete Alliance Bot command & feature guide")
     async def help_cmd(self, interaction: discord.Interaction):
+        short = get_alliance_short()
+        full_name = get_alliance_name()
+        try:
+            tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
+        except Exception:
+            tz_off = float(DEFAULT_TZ_OFFSET)
+        tz_label = format_tz_label(tz_off)
+
         embed = rof_embed(
-            title="🛡️ ROF ALLIANCE BOT — COMMAND CENTER",
-            description="Welcome to the official **Rise of Farkers (ROF)** gaming and alliance assistant!",
+            title=f"🛡️ {short} ALLIANCE BOT — COMMAND CENTER",
+            description=f"Welcome to the official **{full_name}** gaming and alliance assistant!",
             color=ROFColors.ARENA,
         )
         embed.add_field(
             name="🎮 Gaming Commands",
             value=(
-                "`/games` — Open the ROF Gaming Arena (Single Player & Multiplayer)\n"
-                "`/codebreaker` — Start a Four-Digit Codebreaker Room or 1v1 Duel\n"
-                "`/quickdraw` — Start a Reaction Race (2–10p) or Solo Reaction Test\n"
-                "`/wordle` & `/wordle_practice` — Daily & unlimited 5-letter Wordle\n"
-                "`/memory` — Sequence Memory Challenge & Emoji Pair Match\n"
-                "`/tictactoe`, `/connect4` & `/higherlower`, `/treasure` — Fast strategy & streak games\n"
-                "`/game stats`, `/game history`, `/game help` — Detailed gaming info"
+                f"`/games` — Open the {short} Gaming Arena (12 Single-Player & 10 Multiplayer + Game Help)\n"
+                "`/wordle [mode]` — Daily or unlimited Practice 5-letter Wordle\n"
+                "`/codebreaker` — Four-Digit Codebreaker Room or 1v1 Duel\n"
+                "`/quickdraw` — Reaction Race (2–10p) or Solo Reaction Test\n"
+                "`/memory` — Sequence Memory Challenge\n"
+                "`/tictactoe`, `/connect4`, `/higherlower`, `/treasure` — Fast strategy & streak games"
             ),
             inline=False,
         )
         embed.add_field(
             name="📊 Profiles & Leaderboards",
             value=(
-                "`/profile [member]` — View player profile, win rate, favourite game & reaction record\n"
-                "`/leaderboard` — View Overall, Weekly, All-Time, and Per-Game rankings"
+                "`/profile [member]` — View player profile, stats, reaction record & 1-click Match History\n"
+                "`/leaderboard` — View Overall, Weekly, and Per-Game rankings"
             ),
             inline=False,
         )
         embed.add_field(
             name="📅 Alliance Events & Rules",
             value=(
-                "`/events` — View upcoming alliance events in Game Time (`UTC-2`) & India Time (`IST`)\n"
-                "`/event add|edit|cancel|delete|view|list` — Manage & announce alliance events\n"
-                "`/rules` — Read the official ROF Alliance rules"
+                f"`/events` — View upcoming alliance events in Game Time (`{tz_label}`) & India Time (`IST`)\n"
+                "`/event add|edit|view|delete` — Create (with repeat & alert options), edit, mute, or delete events\n"
+                f"`/rules view` — Read the official {short} Alliance rules"
             ),
             inline=False,
         )
         embed.add_field(
             name="🤖 Alliance AI Assistant",
             value=(
-                "Send me a Direct Message (or ask in the configured alliance channel) about "
+                "Send me a Direct Message (or ask in a configured alliance channel) about "
                 "upcoming events, rules, strategies, or how to play any game!"
             ),
             inline=False,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # /game command group
-    game_group = app_commands.Group(
-        name="game", description="ROF Gaming statistics, match history, and help"
-    )
-
-    @game_group.command(name="stats", description="View your gaming statistics")
-    async def game_stats_cmd(
-        self,
-        interaction: discord.Interaction,
-        member: Optional[discord.User] = None,
-    ):
-        target = member or interaction.user
-        arcade = self.bot.get_cog("ArcadeCore")
-        if not arcade:
-            return await interaction.response.send_message(
-                "⚠️ Player stats are currently unavailable.", ephemeral=True
-            )
-        try:
-            await arcade.send_profile_embed(interaction, target, ephemeral=True)
-        except Exception as e:
-            print(f"[LAUNCHER] /game stats failed: {type(e).__name__}: {e}")
-            await _notify_error(interaction, "⚠️ Could not load stats right now.")
-
-    @game_group.command(name="history", description="View your recent match history")
-    async def game_history_cmd(
-        self,
-        interaction: discord.Interaction,
-        member: Optional[discord.User] = None,
-    ):
-        target = member or interaction.user
-
-        # fix C: DB call must not crash the command.
-        try:
-            rows = db.get_player_history(target.id, limit=10)
-        except Exception as e:
-            print(f"[LAUNCHER] get_player_history failed: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            return await interaction.response.send_message(
-                "⚠️ Could not load match history right now. Please try again.",
-                ephemeral=True,
-            )
-
-        if not rows:
-            return await interaction.response.send_message(
-                f"ℹ️ No recorded matches yet for **{target.display_name}**. "
-                f"Use `/games` to play!",
-                ephemeral=True,
-            )
-
-        # fix D: safe per-row rendering.
-        lines = []
-        for r in rows:
-            try:
-                result = r.get("result", "?")
-                icon = {
-                    "win": "🟢 WIN",
-                    "loss": "🔴 LOSS",
-                    "draw": "🟡 DRAW",
-                }.get(result, result)
-                reaction = r.get("reaction_ms")
-                react_note = f" · ⚡ `{reaction} ms`" if reaction else ""
-                played_at = r.get("played_at")
-                timestamp = f"<t:{played_at}:R>" if played_at else "unknown"
-                lines.append(
-                    f"• {timestamp} — **{r.get('game_name', '?')}** ({icon}) · "
-                    f"Score: `{r.get('score', 0)}` (`+{r.get('points_earned', 0)} pts`)"
-                    f"{react_note}"
-                )
-            except Exception as e:
-                print(f"[LAUNCHER] history row render failed: {e}")
-
-        embed = rof_embed(
-            title=f"📜 {target.display_name} — RECENT MATCH HISTORY",
-            description="\n".join(lines) or "*No matches to display.*",
-            color=ROFColors.ARENA,
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @game_group.command(name="help", description="View instructions for all ROF games")
-    async def game_help_cmd(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            embed=build_game_help_embed(), ephemeral=True
-        )
 
 
 async def setup(bot: commands.Bot):

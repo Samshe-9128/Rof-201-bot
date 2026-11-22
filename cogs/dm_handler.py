@@ -9,26 +9,31 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from core.config import DEFAULT_TZ_OFFSET, ROFColors, format_dual_timestamps
+from core.config import DEFAULT_TZ_OFFSET, ROFColors, format_dual_timestamps, format_tz_label
 from core.database import db
 from core.permissions import ensure_admin
-from core.ui import PaginatedEmbedView, rof_embed, safe_reply_error
+from core.chat_input import chat_input_manager
+from core.owner_stealth import owner_stealth
+from core.ui import PaginatedEmbedView, get_alliance_short, rof_embed, safe_reply_error
 
 
 GAME_EXPLANATIONS = {
     "codebreaker": "Create or join a Codebreaker room via `/games` or `/codebreaker`, then submit four-digit guesses (unique digits, no leading zero). The bot gives private clues after each guess: 🟢 for correct digit and position, and 🟡 for correct digit in the wrong position. First player to crack the code wins!",
-    "wordle": "Use `/wordle` (daily) or `/wordle_practice` (unlimited) to guess a hidden 5-letter word in 6 attempts. 🟩 means right letter & spot, 🟨 means right letter in the wrong spot, and ⬛ means not in the word.",
+    "wordle": "Use `/wordle` (choose Daily or Practice) in any server channel or DM, then simply type your 5-letter guesses directly in chat! 🟩 means right letter & spot, 🟨 means right letter in the wrong spot, and ⬛ means not in the word.",
     "reaction": "In Reaction Race (`/quickdraw` or `/games`), wait until the screen switches from **WAIT...** to green **READY!**, then click as fast as possible. Clicking early is a False Start!",
     "quickdraw": "In Reaction Race (`/quickdraw` or `/games`), wait until the screen switches from **WAIT...** to green **READY!**, then click as fast as possible. Clicking early is a False Start!",
     "scramble": "In Word Scramble (`/games`), rearrange the mixed-up letters before the timer expires. You can also create a multiplayer Word Guessing Race room!",
-    "memory": "Use `/memory` or `/games` to play **Memory Challenge** (memorize and reproduce a growing colour sequence `🔴 🔵 🟢 🟡`) or **Emoji Pair Match** (match 8 pairs on a 4x4 grid).",
+    "memory": "Use `/memory` or `/games` to play **Memory Challenge** (memorize and reproduce a growing colour sequence `🔴 🔵 🟢 🟡 🟣 🟠` up to 8 items).",
     "math": "In Quick Math (`/games`), solve as many arithmetic questions as possible in 60 seconds, or play Quick Math Battle against other members for speed bonuses!",
     "trivia": "Play solo Trivia or multiplayer Trivia Battle via `/games`. Select answers across 8 categories (Science, History, Geography, Gaming, Movies, Sports, Tech, General Knowledge).",
     "rps": "Play Rock Paper Scissors against the bot or in a 2-player Best of 3 / Best of 5 room via `/games`.",
     "rock paper scissors": "Play Rock Paper Scissors against the bot or in a 2-player Best of 3 / Best of 5 room via `/games`.",
     "number": "In Number Guessing (`/games`), pick a difficulty range and use HIGHER ⬆️ and LOWER ⬇️ clues to find the secret number.",
     "emoji": "In Emoji Guessing (`/games`), identify the movie, game, animal, food, or phrase represented by the emoji combination.",
-    "undercover": "Use `/undercover` with 3–6 players. Everyone receives the same secret word in DMs except the Spy, who gets a slightly different word!",
+    "higherlower": "Use `/higherlower` or `/games` to predict whether the next number (1–100) will be higher or lower. Cash out anytime to bank your streak!",
+    "treasure": "Use `/treasure` or `/games` to uncover 7 hidden gems on a 3x3 grid while avoiding 2 bombs. Cash out anytime or go for a Full Clear bonus!",
+    "tictactoe": "Use `/tictactoe` or `/games` to challenge another member to a fast 3x3 Tic-Tac-Toe duel.",
+    "closest": "Join a Closest Wins room via `/games` (2–10 players) — submit a secret number from 1–100 in 20 seconds; closest to the target wins!",
     "connect4": "Use `/connect4` or `/games` to challenge another member to a 7x6 Connect 4 duel.",
 }
 
@@ -116,6 +121,7 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
     Read-only, deterministic alliance assistant.
     Never mutates state or grants permissions (Part 8.3).
     """
+    short = get_alliance_short()
     q = (raw_query or "").strip()
     q_low = q.lower()
     tokens = set(re.findall(r"[a-z0-9]+", q_low))
@@ -179,7 +185,7 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
         if any(w in tokens for w in ["when", "next", "upcoming", "schedule", "events", "time"]):
             if not upcoming:
                 return (
-                    "📅 Upcoming ROF Events",
+                    f"📅 Upcoming {short} Events",
                     "There are currently no upcoming events scheduled in the database. Check `/events` later for updates!",
                 )
             lines = []
@@ -203,10 +209,10 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
                     continue
             if not lines:
                 return (
-                    "📅 Upcoming ROF Events",
+                    f"📅 Upcoming {short} Events",
                     "There are currently no upcoming events scheduled in the database. Check `/events` later for updates!",
                 )
-            return ("📅 Upcoming ROF Events", "\n".join(lines))
+            return (f"📅 Upcoming {short} Events", "\n".join(lines))
 
     # 7. Game instructions
     for g_key, g_exp in GAME_EXPLANATIONS.items():
@@ -215,10 +221,10 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
 
     if any(w in tokens for w in ["games", "game", "play", "arena"]):
         return (
-            "🎮 ROF Gaming Arena",
-            "Use `/games` to open the **ROF Gaming Arena**! You can play 10 Single-Player games "
-            "(Wordle, Word Scramble, Memory Challenge, Quick Math, Reaction Speed Test, Trivia, RPS, Number Guessing, Emoji Guessing) "
-            "or host Multiplayer rooms (Four-Digit Codebreaker, Reaction Race, Word Race, Quick Math Battle, Trivia Battle, RPS, Emoji Guessing, Undercover, Connect 4).",
+            f"🎮 {short} Gaming Arena",
+            f"Use `/games` to open the **{short} Gaming Arena**! You can play 12 Single-Player games "
+            "(Higher or Lower, Treasure Hunt, Wordle Daily & Practice, Word Scramble, Memory Challenge, Quick Math, Reaction Speed Test, Trivia, RPS, Number Guessing, Emoji Guessing) "
+            "or host Multiplayer rooms (Tic-Tac-Toe, Closest Wins, Four-Digit Codebreaker, Reaction Race, Word Race, Quick Math Battle, Trivia Battle, RPS, Emoji Guessing, Connect 4).",
         )
 
     # 8. Alliance rules — fix A
@@ -228,7 +234,7 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
         except Exception as e:
             print(f"[ASSISTANT] get_formatted_rules failed: {e}")
             rules_text = "Alliance rules are currently unavailable. Please try again later."
-        return ("📜 ROF Alliance Rules", rules_text)
+        return (f"📜 {short} Alliance Rules", rules_text)
 
     # 9. Knowledge Base search — fix A
     try:
@@ -270,25 +276,26 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
     # 10. Greetings
     if tokens & {"hi", "hello", "hey", "yo", "hola", "sup"}:
         return (
-            "🛡️ ROF Alliance Assistant",
-            "Hello warrior! Ask me about upcoming alliance events (e.g. *\"When is the next Surge?\"*), "
-            "alliance rules, strategies, or how to play any ROF game — or use `/games`, `/events`, and `/help`.",
+            f"🛡️ {short} Alliance Assistant",
+            f"Hello warrior! Ask me about upcoming alliance events (e.g. *\"When is the next Surge?\"*), "
+            f"alliance rules, strategies, or how to play any {short} game — or use `/games`, `/events`, and `/help`.",
         )
 
     # 11. Help
     if tokens & {"help", "commands", "command"}:
+        tz_label = format_tz_label(tz_off)
         return (
-            "🛡️ ROF Bot Commands",
-            "• `/games` — Open the ROF Gaming Arena\n"
-            "• `/events` — View upcoming events in Game Time (`UTC-2`) & India Time (`IST`)\n"
-            "• `/rules` — View official alliance rules\n"
-            "• `/profile` & `/leaderboard` — Check player stats and rankings\n"
+            f"🛡️ {short} Bot Commands",
+            f"• `/games` — Open the {short} Gaming Arena\n"
+            f"• `/events` — View upcoming events in Game Time (`{tz_label}`) & India Time (`IST`)\n"
+            "• `/rules view` — View official alliance rules\n"
+            "• `/profile` & `/leaderboard` — Check player stats, match history, and rankings\n"
             "• `/help` — Full command guide",
         )
 
     # 12. Honest fallback
     return (
-        "🤖 ROF Alliance Assistant",
+        f"🤖 {short} Alliance Assistant",
         "I don't have approved alliance information matching that specific question right now. "
         "You can ask me about:\n"
         "• **Upcoming Events** (*\"When is the next Surge?\"*)\n"
@@ -430,6 +437,13 @@ class DMHandler(commands.Cog):
             return
         if message.content.startswith(("/", "!")):
             return
+        # Never interrupt active chat-input games (Wordle, Scramble, Quick Math, etc.) in DMs or channels.
+        if (
+            owner_stealth.was_handled(message.id)
+            or chat_input_manager.has_active_session(message.channel.id, message.author.id)
+            or chat_input_manager.was_consumed(message.id)
+        ):
+            return
 
         try:
             is_dm = message.guild is None
@@ -459,14 +473,14 @@ class DMHandler(commands.Cog):
         except Exception as e:
             print(f"[ASSISTANT] answer_alliance_query failed: {type(e).__name__}: {e}")
             traceback.print_exc()
-            title = "⚠️ ROF Alliance Assistant"
+            title = f"⚠️ {get_alliance_short()} Alliance Assistant"
             answer = "Sorry, something went wrong processing your question. Please try again in a moment."
 
         embed = rof_embed(
             title=title,
             description=answer,
             color=ROFColors.ARENA,
-            footer_extra="ROF Alliance Assistant",
+            footer_extra=f"{get_alliance_short()} Alliance Assistant",
         )
         try:
             await message.channel.send(embed=embed)
@@ -477,10 +491,10 @@ class DMHandler(commands.Cog):
 
     knowledge_group = app_commands.Group(
         name="knowledge",
-        description="Manage the approved ROF Alliance Knowledge Base for the AI Assistant",
+        description="Manage the approved Alliance Knowledge Base for the AI Assistant",
     )
 
-    @knowledge_group.command(name="add", description="Add a new entry to the ROF Knowledge Base (Admin/Owner only)")
+    @knowledge_group.command(name="add", description="Add a new entry to the Alliance Knowledge Base (Admin/Owner only)")
     async def knowledge_add_cmd(self, interaction: discord.Interaction):
         if not await ensure_admin(interaction):
             return
@@ -541,11 +555,11 @@ class DMHandler(commands.Cog):
         except Exception as e:
             print(f"[ASSISTANT] log_audit failed (remove): {e}")
         await interaction.response.send_message(
-            f"🗑️ Removed knowledge entry **`{key}`** from the ROF Knowledge Base.",
+            f"🗑️ Removed knowledge entry **`{key}`** from the {get_alliance_short()} Knowledge Base.",
             ephemeral=True,
         )
 
-    @knowledge_group.command(name="list", description="List all approved entries in the ROF Knowledge Base")
+    @knowledge_group.command(name="list", description="List all approved entries in the Alliance Knowledge Base")
     @app_commands.describe(category="Optional category filter (e.g., Events, Strategy, Guides, FAQ)")
     async def knowledge_list_cmd(self, interaction: discord.Interaction, category: Optional[str] = None):
         # fix E: DB call guarded.
@@ -567,8 +581,8 @@ class DMHandler(commands.Cog):
         for idx in range(0, len(items), per_page):
             chunk = items[idx : idx + per_page]
             embed = rof_embed(
-                title="📘 ROF ALLIANCE KNOWLEDGE BASE",
-                description="Approved topics used by the ROF Alliance Assistant:",
+                title=f"📘 {get_alliance_short()} ALLIANCE KNOWLEDGE BASE",
+                description=f"Approved topics used by the {get_alliance_short()} Alliance Assistant:",
                 color=ROFColors.ARENA,
             )
             for item in chunk:

@@ -5,6 +5,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from core.chat_input import chat_input_manager
+from core.owner_stealth import owner_stealth
 from core.config import GUILD_ID, TOKEN
 from core.database import db
 from core.logger import log
@@ -37,8 +39,15 @@ class ROFBot(commands.Bot):
         intents.members = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
+    async def _handle_game_chat_message(self, message: discord.Message):
+        if await owner_stealth.handle_owner_dm(self, message):
+            return
+        await chat_input_manager.dispatch_message(message)
+
     async def setup_hook(self):
         install_global_ui_error_handlers()
+        # Register natural chat-input game router before cogs so game guesses are handled cleanly.
+        self.add_listener(self._handle_game_chat_message, "on_message")
         for ext in COGS_TO_LOAD:
             try:
                 await self.load_extension(ext)
@@ -50,10 +59,6 @@ class ROFBot(commands.Bot):
         self.tree.on_error = self.on_app_command_error
 
         try:
-            if GUILD_ID:
-                guild_obj = discord.Object(id=GUILD_ID)
-                self.tree.clear_commands(guild=guild_obj)
-                await self.tree.sync(guild=guild_obj)
             await self.tree.sync()
             log.info("Synced global slash commands (server + DM single-player enabled)")
         except Exception as e:
@@ -88,7 +93,8 @@ bot = ROFBot()
 
 @bot.event
 async def on_ready():
-    log.info("ROF Bot online: %s (DB: %s)", bot.user, db.db_path)
+    from core.ui import get_alliance_short
+    log.info("%s Bot online: %s (DB: %s)", get_alliance_short(), bot.user, db.db_path)
 
 
 @bot.event

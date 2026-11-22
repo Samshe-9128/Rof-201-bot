@@ -11,17 +11,7 @@ from discord.ext import commands
 from core.config import RANKS, ROFColors, get_rank
 from core.database import db
 from core.permissions import ensure_session_player
-from core.ui import rof_embed
-
-
-def load_arcade():
-    if os.path.exists(ARCADE_FILE):
-        try:
-            with open(ARCADE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+from core.ui import get_alliance_short, rof_embed
 
 
 class LeaderboardFilterView(discord.ui.View):
@@ -103,6 +93,51 @@ class LeaderboardFilterView(discord.ui.View):
             print(f"[ARCADE] leaderboard edit failed: {e}")
 
 
+
+
+class ProfileView(discord.ui.View):
+    """Interactive 1-click Match History button attached to /profile."""
+
+    def __init__(self, target: discord.abc.User, viewer_id: int, timeout: float = 180.0):
+        super().__init__(timeout=timeout)
+        self.target = target
+        self.viewer_id = viewer_id
+
+    @discord.ui.button(label="Match History", style=discord.ButtonStyle.secondary, emoji="📜")
+    async def history_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            rows = db.get_player_history(self.target.id, limit=10)
+        except Exception as e:
+            print(f"[ARCADE] get_player_history failed: {type(e).__name__}: {e}")
+            return await interaction.response.send_message(
+                "⚠️ Could not load match history right now. Please try again.",
+                ephemeral=True,
+            )
+        if not rows:
+            return await interaction.response.send_message(
+                f"ℹ️ No recorded matches yet for **{self.target.display_name}**. Use `/games` to play!",
+                ephemeral=True,
+            )
+        lines = []
+        for r in rows:
+            result = r.get("result", "?")
+            icon = {"win": "🟢 WIN", "loss": "🔴 LOSS", "draw": "🟡 DRAW"}.get(result, result)
+            reaction = r.get("reaction_ms")
+            react_note = f" · ⚡ `{reaction} ms`" if reaction else ""
+            played_at = r.get("played_at")
+            timestamp = f"<t:{played_at}:R>" if played_at else "unknown"
+            lines.append(
+                f"• {timestamp} — **{r.get('game_name', '?')}** ({icon}) · "
+                f"Score: `{r.get('score', 0)}` (`+{r.get('points_earned', 0)} pts`){react_note}"
+            )
+        embed = rof_embed(
+            title=f"📜 {self.target.display_name} — RECENT MATCH HISTORY",
+            description="\n".join(lines) or "*No matches to display.*",
+            color=ROFColors.ARENA,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class ArcadeCore(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -171,7 +206,8 @@ class ArcadeCore(commands.Cog):
         favourite_game = prof.get("favourite_game", "—")
         game_stats = prof.get("game_stats") or {}
 
-        rank_name, rank_emoji = get_rank(points)
+        short = get_alliance_short()
+        rank_name, rank_emoji = get_rank(points, alliance_short=short)
         react_str = f"{best_reaction_ms} ms" if best_reaction_ms is not None else "—"
 
         desc = (
@@ -185,7 +221,7 @@ class ArcadeCore(commands.Cog):
             f"**Best Reaction:** `{react_str}`"
         )
         embed = rof_embed(
-            title=f"🛡️ ROF PLAYER PROFILE — {target.display_name.upper()}",
+            title=f"🛡️ {short} PLAYER PROFILE — {target.display_name.upper()}",
             description=desc,
             color=ROFColors.ARENA,
             thumbnail_url=(
@@ -219,7 +255,7 @@ class ArcadeCore(commands.Cog):
         else:
             embed.add_field(
                 name="🎮 Game Breakdown",
-                value="No games played yet. Use `/games` to enter the ROF Gaming Arena!",
+                value=f"No games played yet. Use `/games` to enter the {short} Gaming Arena!",
                 inline=False,
             )
 
@@ -231,16 +267,16 @@ class ArcadeCore(commands.Cog):
             except (TypeError, IndexError):
                 continue
             if points < threshold:
-                next_rank = (threshold, name)
+                next_rank = (threshold, f"{short} Legend" if name == "ROF Legend" else name)
                 break
 
         if next_rank:
             pts_needed = next_rank[0] - points
             embed.set_footer(
-                text=f"{pts_needed} points to reach {next_rank[1]} • ROF Gaming Arena"
+                text=f"{pts_needed} points to reach {next_rank[1]} • {short} Gaming Arena"
             )
         else:
-            embed.set_footer(text="Maximum Rank Achieved (ROF Legend) • ROF Gaming Arena")
+            embed.set_footer(text=f"Maximum Rank Achieved ({short} Legend) • {short} Gaming Arena")
 
         return embed
 
@@ -263,8 +299,9 @@ class ArcadeCore(commands.Cog):
             except Exception:
                 return
 
+        view = ProfileView(target, interaction.user.id)
         try:
-            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
         except Exception as e:
             print(f"[ARCADE] send_profile_embed failed: {e}")
 
@@ -311,12 +348,13 @@ class ArcadeCore(commands.Cog):
             traceback.print_exc()
             rows = []
 
+        short = get_alliance_short()
         if scope == "weekly":
-            title = "🏆 ROF LEADERBOARD — WEEKLY (LAST 7 DAYS)"
+            title = f"🏆 {short} LEADERBOARD — WEEKLY (LAST 7 DAYS)"
         elif scope == "game" and game_name:
-            title = f"🏆 ROF LEADERBOARD — {game_name.upper()}"
+            title = f"🏆 {short} LEADERBOARD — {game_name.upper()}"
         else:
-            title = "🏆 ROF LEADERBOARD — ALL-TIME OVERALL"
+            title = f"🏆 {short} LEADERBOARD — ALL-TIME OVERALL"
 
         if not rows:
             return rof_embed(
@@ -351,7 +389,7 @@ class ArcadeCore(commands.Cog):
                 pts = int(r.get("points", 0) or 0)
                 wins = int(r.get("wins", 0) or 0)
                 gp = int(r.get("games_played", 0) or 0)
-                rank_name, rank_emoji = get_rank(pts)
+                rank_name, rank_emoji = get_rank(pts, alliance_short=short)
                 lines.append(
                     f"{medal} **{name}** — {rank_emoji} **`{pts} pts`** "
                     f"({rank_name}) · `{wins}W/{gp}G`"
@@ -399,7 +437,7 @@ class ArcadeCore(commands.Cog):
 
     @app_commands.command(
         name="profile",
-        description="View your ROF Player Profile and gaming statistics",
+        description="View your Player Profile, gaming statistics, and match history",
     )
     async def profile_cmd(
         self,
@@ -411,7 +449,7 @@ class ArcadeCore(commands.Cog):
 
     @app_commands.command(
         name="leaderboard",
-        description="View the ROF Gaming Leaderboard (Overall, Weekly, and Per-Game)",
+        description="View the Gaming Leaderboard (Overall, Weekly, and Per-Game)",
     )
     @app_commands.describe(scope="Choose Overall All-Time or Weekly")
     @app_commands.choices(

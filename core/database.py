@@ -33,7 +33,7 @@ DEFAULT_KNOWLEDGE_ENTRIES = [
         "key": "surge_guide",
         "title": "Surge Event Guide",
         "category": "Events",
-        "content": "During Surge, rally with online alliance members at the scheduled Game Time (UTC-2). Check `/events` for the exact start time and join voice or event chat 10 minutes before launch.",
+        "content": "During Surge, rally with online alliance members at the scheduled Game Time. Check `/events` for the exact start time and join voice or event chat before launch.",
         "keywords": "surge event guide schedule rally how to play surge",
     },
     {
@@ -59,9 +59,9 @@ DEFAULT_KNOWLEDGE_ENTRIES = [
     },
     {
         "key": "member_responsibilities",
-        "title": "ROF Member Responsibilities",
+        "title": "Alliance Member Responsibilities",
         "category": "Guides",
-        "content": "Stay active, contribute to alliance tech donations daily, check `/events` for upcoming battles, and treat fellow ROF members with respect.",
+        "content": "Stay active, contribute to alliance tech donations daily, check `/events` for upcoming battles, and treat fellow alliance members with respect.",
         "keywords": "member responsibilities duties donations active rules guide",
     },
 ]
@@ -74,8 +74,10 @@ class Database:
         self.target_db_path = db_path
         self.db_path = self._resolve_working_db_path(db_path)
         self._lock = threading.RLock()
+        self._config_cache: Dict[str, str] = {}
         self._init_db()
         self._migrate_legacy_json()
+        self._load_config_cache()
 
     def _resolve_working_db_path(self, requested_path: str) -> str:
         """Use requested_path directly when the filesystem supports SQLite locking; fallback to temp storage + file sync on FUSE mounts."""
@@ -109,7 +111,6 @@ class Database:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.execute("PRAGMA busy_timeout=5000;")
@@ -121,6 +122,7 @@ class Database:
         with self._lock:
             conn = self._connect()
             try:
+                conn.execute("PRAGMA journal_mode=WAL;")
                 with conn:
                     conn.executescript(
                         """
@@ -179,6 +181,8 @@ class Database:
                             creator_id INTEGER DEFAULT 0,
                             reminder_minutes INTEGER DEFAULT 10,
                             reminder_sent INTEGER DEFAULT 0,
+                            repeat_days INTEGER DEFAULT 0,
+                            announce_enabled INTEGER DEFAULT 1,
                             status TEXT DEFAULT 'scheduled',
                             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -254,6 +258,12 @@ class Database:
                                 """,
                                 (item["key"], item["title"], item["category"], item["content"], item["keywords"]),
                             )
+                    # Safe schema auto-migration for existing databases
+                    ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+                    if "repeat_days" not in ev_cols:
+                        conn.execute("ALTER TABLE events ADD COLUMN repeat_days INTEGER DEFAULT 0")
+                    if "announce_enabled" not in ev_cols:
+                        conn.execute("ALTER TABLE events ADD COLUMN announce_enabled INTEGER DEFAULT 1")
             finally:
                 conn.close()
             self._mirror_if_needed()
@@ -399,20 +409,23 @@ class Database:
                     )
             finally:
                 conn.close()
-        self._sync_rules_json()
-        self._sync_events_json()
         self._mirror_if_needed()
 
-    def get_config(self, key: str, default: str = "") -> str:
+    def _load_config_cache(self) -> None:
         with self._lock:
             conn = self._connect()
             try:
-                row = conn.execute("SELECT value FROM server_config WHERE key = ?", (key,)).fetchone()
-                return row["value"] if row else default
+                rows = conn.execute("SELECT key, value FROM server_config").fetchall()
+                self._config_cache = {r["key"]: r["value"] for r in rows}
             finally:
                 conn.close()
 
+    def get_config(self, key: str, default: str = "") -> str:
+        with self._lock:
+            return self._config_cache.get(key, default)
+
     def set_config(self, key: str, value: str):
+        k_str, v_str = str(key), str(value)
         with self._lock:
             conn = self._connect()
             try:
@@ -423,10 +436,11 @@ class Database:
                         VALUES (?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
                         """,
-                        (str(key), str(value)),
+                        (k_str, v_str),
                     )
             finally:
                 conn.close()
+            self._config_cache[k_str] = v_str
             self._mirror_if_needed()
 
     def add_admin(self, target_id: int, target_type: str = "user", added_by: int = 0):
@@ -623,7 +637,6 @@ class Database:
             finally:
                 conn.close()
 
-        self._sync_arcade_json()
         self._mirror_if_needed()
         return int(new_pts)
 
@@ -765,40 +778,8 @@ class Database:
                     conn.execute("DELETE FROM game_history WHERE user_id = ?", (uid,))
             finally:
                 conn.close()
-        self._sync_arcade_json()
         self._mirror_if_needed()
 
-    def _sync_arcade_json(self):
-        try:
-            with self._lock:
-                conn = self._connect()
-                try:
-                    p_rows = conn.execute("SELECT * FROM players").fetchall()
-                    g_rows = conn.execute("SELECT * FROM game_stats").fetchall()
-                finally:
-                    conn.close()
-            out = {}
-            for p in p_rows:
-                uid = str(p["user_id"])
-                out[uid] = {
-                    "points": p["points"],
-                    "games_played": p["games_played"],
-                    "wins": p["wins"],
-                    "losses": p["losses"],
-                    "draws": p["draws"],
-                    "game_stats": {},
-                }
-            for g in g_rows:
-                uid = str(g["user_id"])
-                if uid in out:
-                    out[uid]["game_stats"][g["game_name"]] = {
-                        "played": g["played"],
-                        "won": g["wins"],
-                    }
-            with open(ARCADE_FILE, "w", encoding="utf-8") as f:
-                json.dump(out, f, indent=4)
-        except Exception:
-            pass
 
     def create_event(
         self,
@@ -810,8 +791,12 @@ class Database:
         channel_id: int,
         creator_id: int,
         reminder_minutes: int = 10,
+        repeat_days: int = 0,
+        announce_enabled: int = 1,
     ) -> Dict[str, Any]:
         utc_iso = start_time_utc.astimezone(timezone.utc).isoformat()
+        rep = max(0, min(365, int(repeat_days or 0)))
+        ann = 1 if int(announce_enabled) else 0
         with self._lock:
             conn = self._connect()
             try:
@@ -819,8 +804,8 @@ class Database:
                     conn.execute(
                         """
                         INSERT INTO events
-                        (id, name, description, start_time_utc, duration_minutes, channel_id, creator_id, reminder_minutes, reminder_sent, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'scheduled')
+                        (id, name, description, start_time_utc, duration_minutes, channel_id, creator_id, reminder_minutes, reminder_sent, repeat_days, announce_enabled, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'scheduled')
                         """,
                         (
                             event_id,
@@ -831,11 +816,12 @@ class Database:
                             int(channel_id),
                             int(creator_id),
                             int(reminder_minutes),
+                            rep,
+                            ann,
                         ),
                     )
             finally:
                 conn.close()
-        self._sync_events_json()
         self._mirror_if_needed()
         return self.get_event(event_id)
 
@@ -848,6 +834,8 @@ class Database:
         duration_minutes: Optional[int] = None,
         channel_id: Optional[int] = None,
         reminder_minutes: Optional[int] = None,
+        repeat_days: Optional[int] = None,
+        announce_enabled: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         ev = self.get_event(event_id)
         if not ev:
@@ -858,6 +846,8 @@ class Database:
         new_dur = int(duration_minutes) if duration_minutes is not None else ev["duration_minutes"]
         new_chan = int(channel_id) if channel_id is not None else ev["channel_id"]
         new_rem = int(reminder_minutes) if reminder_minutes is not None else ev["reminder_minutes"]
+        new_rep = max(0, min(365, int(repeat_days))) if repeat_days is not None else int(ev.get("repeat_days", 0) or 0)
+        new_ann = (1 if int(announce_enabled) else 0) if announce_enabled is not None else int(ev.get("announce_enabled", 1) if ev.get("announce_enabled") is not None else 1)
 
         reminder_sent = ev["reminder_sent"]
         if start_time_utc is not None or reminder_minutes is not None:
@@ -879,14 +869,15 @@ class Database:
                             channel_id = ?,
                             reminder_minutes = ?,
                             reminder_sent = ?,
+                            repeat_days = ?,
+                            announce_enabled = ?,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
                         """,
-                        (new_name, new_desc, new_utc, new_dur, new_chan, new_rem, reminder_sent, event_id),
+                        (new_name, new_desc, new_utc, new_dur, new_chan, new_rem, reminder_sent, new_rep, new_ann, event_id),
                     )
             finally:
                 conn.close()
-        self._sync_events_json()
         self._mirror_if_needed()
         return self.get_event(event_id)
 
@@ -907,7 +898,6 @@ class Database:
                         )
             finally:
                 conn.close()
-        self._sync_events_json()
         self._mirror_if_needed()
         return ev
 
@@ -942,29 +932,90 @@ class Database:
     def get_due_reminders(self) -> List[Dict[str, Any]]:
         now_utc = datetime.now(timezone.utc)
         due = []
+        mutated = False
         with self._lock:
             conn = self._connect()
             try:
                 rows = conn.execute(
-                    "SELECT * FROM events WHERE status = 'scheduled' AND reminder_sent = 0"
+                    "SELECT * FROM events WHERE status = 'scheduled'"
                 ).fetchall()
                 for r in rows:
                     ev = dict(r)
                     start_dt = datetime.fromisoformat(ev["start_time_utc"])
                     if start_dt.tzinfo is None:
                         start_dt = start_dt.replace(tzinfo=timezone.utc)
-                    rem_dt = start_dt - timedelta(minutes=int(ev.get("reminder_minutes", 10)))
+                    rep_days = int(ev.get("repeat_days") or 0)
+                    ann_on = int(ev.get("announce_enabled") if ev.get("announce_enabled") is not None else 1)
+                    rem_sent = int(ev.get("reminder_sent") or 0)
+                    rem_dt = start_dt - timedelta(minutes=int(ev.get("reminder_minutes", 10) or 0))
+
                     if now_utc >= start_dt:
-                        conn.execute(
-                            "UPDATE events SET reminder_sent = 1, status = 'completed' WHERE id = ?",
-                            (ev["id"],),
-                        )
+                        if rep_days > 0:
+                            next_dt = start_dt
+                            while next_dt <= now_utc:
+                                next_dt = next_dt + timedelta(days=rep_days)
+                            conn.execute(
+                                "UPDATE events SET start_time_utc = ?, reminder_sent = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (next_dt.astimezone(timezone.utc).isoformat(), ev["id"]),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE events SET reminder_sent = 1, status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (ev["id"],),
+                            )
                         conn.commit()
-                    elif now_utc >= rem_dt:
-                        due.append(ev)
+                        mutated = True
+                    elif rem_sent == 0 and int(ev.get("reminder_minutes", 10) or 0) > 0 and now_utc >= rem_dt:
+                        if ann_on == 1:
+                            due.append(ev)
+                        else:
+                            conn.execute(
+                                "UPDATE events SET reminder_sent = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (ev["id"],),
+                            )
+                            conn.commit()
+                            mutated = True
             finally:
                 conn.close()
+        if mutated:
+                self._mirror_if_needed()
         return due
+
+    def set_event_announce(self, event_id: str, enabled: bool) -> Optional[Dict[str, Any]]:
+        return self.update_event(event_id, announce_enabled=(1 if enabled else 0))
+
+    def set_event_repeat(self, event_id: str, repeat_days: int) -> Optional[Dict[str, Any]]:
+        return self.update_event(event_id, repeat_days=max(0, min(365, int(repeat_days))))
+
+    def get_all_config(self) -> Dict[str, str]:
+        with self._lock:
+            return dict(sorted(self._config_cache.items()))
+
+    def reset_player_stats(self, user_id: int) -> None:
+        self.wipe_player_stats(user_id)
+
+    def adjust_player_points(self, user_id: int, new_points: int, username: str = "") -> int:
+        """Directly set a player's total points without polluting game_stats or game_history."""
+        uid = int(user_id)
+        pts = max(0, int(new_points))
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO players (user_id, username, points, games_played, wins, losses, draws, best_score)
+                        VALUES (?, ?, ?, 0, 0, 0, 0, 0)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                            points = excluded.points,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (uid, username or "", pts),
+                    )
+            finally:
+                conn.close()
+        self._mirror_if_needed()
+        return pts
 
     def mark_reminder_sent(self, event_id: str):
         with self._lock:
@@ -977,35 +1028,8 @@ class Database:
                     )
             finally:
                 conn.close()
-        self._sync_events_json()
         self._mirror_if_needed()
 
-    def _sync_events_json(self):
-        try:
-            with self._lock:
-                conn = self._connect()
-                try:
-                    rows = conn.execute("SELECT * FROM events WHERE status = 'scheduled'").fetchall()
-                finally:
-                    conn.close()
-            legacy = []
-            for r in rows:
-                legacy.append(
-                    {
-                        "id": r["id"],
-                        "name": r["name"],
-                        "description": r["description"],
-                        "time": r["start_time_utc"],
-                        "duration_minutes": r["duration_minutes"],
-                        "channel": r["channel_id"],
-                        "reminder_sent": bool(r["reminder_sent"]),
-                        "creator": r["creator_id"],
-                    }
-                )
-            with open(EVENTS_FILE, "w", encoding="utf-8") as f:
-                json.dump(legacy, f, indent=4)
-        except Exception:
-            pass
 
     def get_rules_list(self) -> List[Dict[str, Any]]:
         with self._lock:
@@ -1035,7 +1059,6 @@ class Database:
                     )
             finally:
                 conn.close()
-        self._sync_rules_json()
         self._mirror_if_needed()
         return next_num
 
@@ -1052,8 +1075,7 @@ class Database:
             finally:
                 conn.close()
         if updated:
-            self._sync_rules_json()
-            self._mirror_if_needed()
+                self._mirror_if_needed()
         return updated
 
     def remove_rule(self, rule_number: int) -> bool:
@@ -1069,7 +1091,6 @@ class Database:
                         conn.execute("UPDATE rules SET rule_number = ? WHERE id = ?", (idx, row["id"]))
             finally:
                 conn.close()
-        self._sync_rules_json()
         self._mirror_if_needed()
         return True
 
@@ -1093,16 +1114,8 @@ class Database:
                         )
             finally:
                 conn.close()
-        self._sync_rules_json()
         self._mirror_if_needed()
 
-    def _sync_rules_json(self):
-        try:
-            text = self.get_formatted_rules()
-            with open(RULES_FILE, "w", encoding="utf-8") as f:
-                json.dump({"rules": text}, f, indent=4)
-        except Exception:
-            pass
 
     def upsert_knowledge(
         self,

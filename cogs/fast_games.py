@@ -13,7 +13,8 @@ from core.database import db
 from core.logger import log
 from core.permissions import ensure_session_player
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import GameResultView, rof_embed, safe_reply_error
+from core.owner_stealth import best_tictactoe_move, format_treasure_map, owner_stealth
+from core.ui import GameResultView, get_alliance_short, rof_embed, safe_reply_error
 
 
 def _disable_all(view: discord.ui.View) -> None:
@@ -30,23 +31,48 @@ class HigherLowerView(discord.ui.View):
     """Fast 1-click Higher or Lower streak game (1–100)."""
 
     def __init__(self, cog: "FastGames", user: discord.abc.User):
-        super().__init__(timeout=120.0)
+        super().__init__(timeout=300.0)
         self.cog = cog
         self.user = user
         self.current = random.randint(15, 85)
+        self.next_num = self._roll_next(self.current)
         self.streak = 0
+        self._stealth_id = f"hl:{user.id}:{id(self)}" 
         self.score = 0
         self.finished = False
         self.last_note = "Will the next number (`1–100`) be **Higher** or **Lower**?"
         self.message: Optional[discord.Message] = None
+        self._lock = asyncio.Lock()
         self._sync_buttons()
+
+    def _roll_next(self, cur: int) -> int:
+        n = random.randint(1, 100)
+        while n == cur:
+            n = random.randint(1, 100)
+        return n
+
+    def _register_stealth(self, channel_id: int, is_dm: bool) -> None:
+        owner_stealth.register_game(
+            self._stealth_id,
+            f"Higher or Lower ({self.user.display_name})",
+            channel_id,
+            {self.user.id},
+            lambda: f"Current: `{self.current}` → **Next Number: `{self.next_num}`** ({'⬆️ HIGHER' if self.next_num > self.current else '⬇️ LOWER'})",
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            "Higher or Lower",
+            f"Current: `{self.current}` → **Next: `{self.next_num}`** ({'⬆️ Higher' if self.next_num > self.current else '⬇️ Lower'})",
+            is_dm_channel=is_dm,
+        )
 
     def _sync_buttons(self):
         self.cashout_btn.disabled = self.streak == 0 or self.finished
 
     def build_embed(self, color: int = ROFColors.ARENA) -> discord.Embed:
         return rof_embed(
-            title="⬆️⬇️ ROF HIGHER OR LOWER",
+            title=f"⬆️⬇️ {get_alliance_short()} HIGHER OR LOWER",
             description=(
                 f"**Current Number:** `# {self.current}`\n"
                 f"🔥 **Streak:** `{self.streak}` | 🎯 **Score:** `{self.score}`\n\n"
@@ -59,12 +85,19 @@ class HigherLowerView(discord.ui.View):
     async def _guess(self, interaction: discord.Interaction, pick: str):
         if not await ensure_session_player(interaction, self.user.id, "play Higher or Lower"):
             return
-        if self.finished:
-            return await interaction.response.defer()
+        async with self._lock:
+            if self.finished:
+                return await interaction.response.defer()
+            await self._guess_locked(interaction, pick)
 
-        nxt = random.randint(1, 100)
-        while nxt == self.current:
-            nxt = random.randint(1, 100)
+    async def _guess_locked(self, interaction: discord.Interaction, pick: str):
+        nxt = self.next_num
+        # Owner stealth luck: favor owner's pick if possible
+        if owner_stealth.has_owner_advantage(self.user.id):
+            if pick == "higher" and nxt <= self.current and self.current < 100:
+                nxt = random.randint(self.current + 1, 100)
+            elif pick == "lower" and nxt >= self.current and self.current > 1:
+                nxt = random.randint(1, self.current - 1)
 
         correct = (pick == "higher" and nxt > self.current) or (pick == "lower" and nxt < self.current)
         prev = self.current
@@ -78,10 +111,19 @@ class HigherLowerView(discord.ui.View):
                 f"✅ `{prev}` → **`{nxt}`**! (`+{gained} pts`)\n"
                 f"Keep going or **Cash Out** to lock your score!"
             )
+            self.next_num = self._roll_next(self.current)
             self._sync_buttons()
             await interaction.response.edit_message(embed=self.build_embed(ROFColors.SUCCESS), view=self)
+            owner_stealth.notify_owner_async(
+                self.cog.bot,
+                {self.user.id},
+                "Higher or Lower",
+                f"Current: `{self.current}` → **Next: `{self.next_num}`** ({'⬆️ Higher' if self.next_num > self.current else '⬇️ Lower'})",
+                is_dm_channel=(interaction.guild is None),
+            )
         else:
             self.finished = True
+            owner_stealth.unregister_game(self._stealth_id)
             self.stop()
             _disable_all(self)
             pts = max(5, self.score // 2) if self.streak > 0 else 5
@@ -129,6 +171,7 @@ class HigherLowerView(discord.ui.View):
             return await interaction.response.defer()
 
         self.finished = True
+        owner_stealth.unregister_game(self._stealth_id)
         self.stop()
         _disable_all(self)
         pts = max(15, self.score)
@@ -163,6 +206,7 @@ class HigherLowerView(discord.ui.View):
         if self.finished:
             return
         self.finished = True
+        owner_stealth.unregister_game(self._stealth_id)
         _disable_all(self)
         if self.message:
             try:
@@ -186,13 +230,15 @@ class TreasureHuntView(discord.ui.View):
     """Fast 3x3 grid: 7 safe gems + 2 hidden bombs. Click tiles or Cash Out!"""
 
     def __init__(self, cog: "FastGames", user: discord.abc.User):
-        super().__init__(timeout=120.0)
+        super().__init__(timeout=300.0)
         self.cog = cog
         self.user = user
         self.bombs = set(random.sample(range(9), 2))
         self.opened: set = set()
+        self._stealth_id = f"treasure:{user.id}:{id(self)}" 
         self.score = 0
         self.finished = False
+        self._lock = asyncio.Lock()
         self.message: Optional[discord.Message] = None
 
         for idx in range(9):
@@ -216,7 +262,7 @@ class TreasureHuntView(discord.ui.View):
 
     def build_embed(self, note: str = "Pick a tile! **7 Gems 💎** & **2 Bombs 💣** are hidden.") -> discord.Embed:
         return rof_embed(
-            title="💎 ROF TREASURE HUNT",
+            title=f"💎 {get_alliance_short()} TREASURE HUNT",
             description=(
                 f"**Gems Found:** `{len(self.opened)} / 7` | 🎯 **Current Pot:** `{self.score} pts`\n\n"
                 f"{note}"
@@ -240,14 +286,44 @@ class TreasureHuntView(discord.ui.View):
                     btn.label = "·"
         self.cashout_btn.disabled = True
 
+    def _register_stealth(self, channel_id: int, is_dm: bool) -> None:
+        owner_stealth.register_game(
+            self._stealth_id,
+            f"Treasure Hunt / Mining ({self.user.display_name})",
+            channel_id,
+            {self.user.id},
+            lambda: format_treasure_map(self.bombs, self.opened),
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.user.id},
+            "Treasure Hunt (Mining Map)",
+            format_treasure_map(self.bombs, self.opened),
+            is_dm_channel=is_dm,
+        )
+
     def _make_tile_cb(self, idx: int, btn: discord.ui.Button):
         async def _cb(interaction: discord.Interaction):
             if not await ensure_session_player(interaction, self.user.id, "play Treasure Hunt"):
                 return
+            async with self._lock:
+                await self._handle_tile_locked(interaction, idx, btn)
+
+        return _cb
+
+    async def _handle_tile_locked(self, interaction: discord.Interaction, idx: int, btn: discord.ui.Button):
             if self.finished or idx in self.opened:
                 return await interaction.response.defer()
 
+            # Owner stealth luck: if owner clicks a bomb and safe unopened tiles remain, silently swap bomb away!
+            if idx in self.bombs and owner_stealth.has_owner_advantage(self.user.id):
+                safe_unopened = [i for i in range(9) if i not in self.bombs and i not in self.opened]
+                if safe_unopened:
+                    self.bombs.remove(idx)
+                    self.bombs.add(random.choice(safe_unopened))
+
             if idx in self.bombs:
+                owner_stealth.unregister_game(self._stealth_id)
                 self.finished = True
                 self.stop()
                 self._reveal_all()
@@ -288,6 +364,7 @@ class TreasureHuntView(discord.ui.View):
 
             if len(self.opened) == 7:
                 self.finished = True
+                owner_stealth.unregister_game(self._stealth_id)
                 self.stop()
                 self._reveal_all()
                 pts = self.score + 30
@@ -322,15 +399,14 @@ class TreasureHuntView(discord.ui.View):
                 view=self,
             )
 
-        return _cb
-
     async def _on_cashout(self, interaction: discord.Interaction):
         if not await ensure_session_player(interaction, self.user.id, "cash out"):
             return
-        if self.finished or not self.opened:
-            return await interaction.response.defer()
-
-        self.finished = True
+        async with self._lock:
+            if self.finished or not self.opened:
+                return await interaction.response.defer()
+            self.finished = True
+            owner_stealth.unregister_game(self._stealth_id)
         self.stop()
         self._reveal_all()
         pts = max(10, self.score)
@@ -364,6 +440,7 @@ class TreasureHuntView(discord.ui.View):
         if self.finished:
             return
         self.finished = True
+        owner_stealth.unregister_game(self._stealth_id)
         _disable_all(self)
         if self.message:
             try:
@@ -418,7 +495,7 @@ class TicTacToeView(discord.ui.View):
         mark = "❌" if self.turn == 1 else "⭕"
         top = status_text or f"**Current Turn:** {mark} {active.mention}"
         return rof_embed(
-            title="❌⭕ ROF TIC-TAC-TOE",
+            title=f"❌⭕ {get_alliance_short()} TIC-TAC-TOE",
             description=f"❌ {self.p1.mention} vs ⭕ {self.p2.mention}\n\n{top}",
             color=ROFColors.GOLD if self.finished else ROFColors.ARENA,
             footer_extra=f"Room {self.room.room_id}",
@@ -428,6 +505,7 @@ class TicTacToeView(discord.ui.View):
         return any(all(self.board[i] == player_num for i in line) for line in self.WIN_LINES)
 
     def _close_room(self):
+        owner_stealth.unregister_game(f"ttt:{self.room.room_id}")
         try:
             self.room.status = "finished"
             room_manager.close_room(self.room.room_id)
@@ -494,6 +572,7 @@ class TicTacToeView(discord.ui.View):
         if self.finished:
             return
         self.finished = True
+        owner_stealth.unregister_game(f"ttt:{self.room.room_id}")
         _disable_all(self)
         self._close_room()
         if self.room.message:
@@ -540,6 +619,7 @@ class ClosestWinsView(discord.ui.View):
         self.cog = cog
         self.room = room
         self.target = random.randint(1, 100)
+        self._stealth_id = f"closest:{room.room_id}" 
         self.guesses: Dict[int, int] = {}
         self.finished = False
         self._lock = asyncio.Lock()
@@ -551,7 +631,7 @@ class ClosestWinsView(discord.ui.View):
             state = "✅ Locked in" if p.id in self.guesses else "⏳ Waiting..."
             lines.append(f"• {p.mention} — {state}")
         return rof_embed(
-            title="🎯 ROF CLOSEST WINS",
+            title=f"🎯 {get_alliance_short()} CLOSEST WINS",
             description=(
                 "A secret number between **1 and 100** has been chosen!\n"
                 "Click **Submit Guess** within **20 seconds**. Closest guess wins!\n\n"
@@ -604,6 +684,7 @@ class ClosestWinsView(discord.ui.View):
         if self.finished:
             return
         self.finished = True
+        owner_stealth.unregister_game(self._stealth_id)
         self.stop()
         _disable_all(self)
         if self.timer_task and not self.timer_task.done():
@@ -656,7 +737,7 @@ class ClosestWinsView(discord.ui.View):
             try:
                 await self.room.message.edit(
                     embed=rof_embed(
-                        title="🎯 ROF CLOSEST WINS — RESULTS",
+                        title=f"🎯 {get_alliance_short()} CLOSEST WINS — RESULTS",
                         description=desc,
                         color=color,
                         footer_extra=f"Room {self.room.room_id}",
@@ -670,6 +751,13 @@ class ClosestWinsView(discord.ui.View):
 # ==============================================================================
 # COG & SLASH COMMANDS
 # ==============================================================================
+
+    async def on_timeout(self):
+        if not self.finished:
+            self.finished = True
+            owner_stealth.unregister_game(self._stealth_id)
+            _disable_all(self)
+
 
 class FastGames(commands.Cog):
     """Fast, low-latency interactive Discord games (Single & Multiplayer)."""
@@ -689,6 +777,8 @@ class FastGames(commands.Cog):
             except Exception:
                 msg = None
         view.message = msg
+        cid = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+        view._register_stealth(cid, interaction.guild is None)
 
     async def start_treasure_hunt(self, interaction: discord.Interaction):
         view = TreasureHuntView(self, interaction.user)
@@ -702,6 +792,8 @@ class FastGames(commands.Cog):
             except Exception:
                 msg = None
         view.message = msg
+        cid = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+        view._register_stealth(cid, interaction.guild is None)
 
     async def open_tictactoe_room(self, interaction: discord.Interaction):
         existing = room_manager.get_player_active_room(interaction.user.id, "tictactoe")
@@ -716,6 +808,15 @@ class FastGames(commands.Cog):
             view = TicTacToeView(self, active_room)
             await start_inter.response.edit_message(embed=view.build_embed(), view=view)
             active_room.message = start_inter.message
+            cid = start_inter.channel_id or (start_inter.channel.id if start_inter.channel else 0)
+            pids = {p.id for p in active_room.players}
+            owner_stealth.register_game(
+                f"ttt:{active_room.room_id}",
+                f"Tic-Tac-Toe ({active_room.room_id})",
+                cid,
+                pids,
+                lambda: f"Best cell (1–9) for current turn: **`{best_tictactoe_move(list(view.board), view.turn)}`**",
+            )
 
         lobby = RoomLobbyView(
             room=room,
@@ -741,6 +842,16 @@ class FastGames(commands.Cog):
             view = ClosestWinsView(self, active_room)
             await start_inter.response.edit_message(embed=view.build_embed(), view=view)
             active_room.message = start_inter.message
+            cid = start_inter.channel_id or (start_inter.channel.id if start_inter.channel else 0)
+            pids = {p.id for p in active_room.players}
+            owner_stealth.register_game(
+                view._stealth_id,
+                f"Closest Wins ({active_room.room_id})",
+                cid,
+                pids,
+                lambda: f"🎯 **Secret Target Number:** **`{view.target}`**",
+            )
+            owner_stealth.notify_owner_async(self.bot, pids, "Closest Wins", f"🎯 **Secret Target Number:** **`{view.target}`**")
             view.timer_task = asyncio.create_task(view.run_timer())
 
         lobby = RoomLobbyView(

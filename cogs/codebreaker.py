@@ -11,7 +11,9 @@ from typing import Dict, List, Optional, Tuple
 from core.config import GUILD_ID, ROFColors
 from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import safe_reply_error, rof_embed
+from core.chat_input import chat_input_manager, safe_add_reaction
+from core.owner_stealth import owner_stealth
+from core.ui import get_alliance_short, safe_edit_or_send, safe_reply_error, rof_embed
 
 
 def generate_secret_code(allow_repeats: bool = False) -> str:
@@ -54,7 +56,7 @@ def evaluate_codebreaker_guess(secret: str, guess: str) -> Tuple[int, int]:
 
 # ---------- MULTIPLAYER CODEBREAKER RACE (PRIORITY SPEC 3.8) ----------
 
-class CodebreakerRaceModal(discord.ui.Modal, title="ROF Codebreaker — Submit Guess"):
+class CodebreakerRaceModal(discord.ui.Modal):
     guess_input = discord.ui.TextInput(
         label="Enter your 4-digit guess (No leading 0)",
         placeholder="e.g., 4271",
@@ -64,7 +66,7 @@ class CodebreakerRaceModal(discord.ui.Modal, title="ROF Codebreaker — Submit G
     )
 
     def __init__(self, match_view: "CodebreakerMatchView"):
-        super().__init__()
+        super().__init__(title=f"{get_alliance_short()} Codebreaker — Guess"[:45])
         self.match_view = match_view
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -110,6 +112,60 @@ class CodebreakerMatchView(discord.ui.View):
         self.finished = False
         self._finished_guard = False  # prevents double-finish races
         self.timer_task: Optional[asyncio.Task] = None
+        self.session_id = f"codebreaker_room:{room.room_id}"
+
+    def register_solo_chat_input(self, channel_id: int) -> None:
+        if len(self.room.players) != 1 or not channel_id:
+            return
+        solo_user = self.room.players[0]
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=channel_id,
+            game_name="Codebreaker Solo",
+            handler=self._on_solo_chat_guess,
+            allowed_user_ids={solo_user.id},
+            timeout_seconds=self.round_seconds + 30,
+        )
+
+    async def _on_solo_chat_guess(self, message: discord.Message) -> bool:
+        if self.finished or len(self.room.players) != 1 or message.author.id != self.room.players[0].id:
+            return False
+        raw = (message.content or "").strip()
+        if len(raw) != 4 or not raw.isdigit():
+            return False
+        if raw[0] == "0" or (not self.allow_repeats and len(set(raw)) != 4):
+            await safe_add_reaction(message, "❌")
+            return True
+        async with self.room.lock:
+            if self.finished:
+                return False
+            p_list = self.guesses.setdefault(message.author.id, [])
+            if len(p_list) >= self.max_attempts:
+                return False
+            greens, yellows = evaluate_codebreaker_guess(self.secret_code, raw)
+            p_list.append((raw, greens, yellows))
+            if greens == 4:
+                self.winner = message.author
+                self.finished = True
+                if self.timer_task and not self.timer_task.done():
+                    self.timer_task.cancel()
+            elif len(p_list) >= self.max_attempts:
+                self.finished = True
+                if self.timer_task and not self.timer_task.done():
+                    self.timer_task.cancel()
+            just_finished = self.finished
+        await safe_add_reaction(message, "🎉" if greens == 4 else "✅")
+        if just_finished:
+            await self.finish_match()
+        elif self.room.message:
+            try:
+                embed = self.build_public_embed()
+                history_lines = [f"`{g}` → 🟢 **{gr}** | 🟡 **{ye}**" for g, gr, ye in self.guesses.get(message.author.id, [])]
+                embed.add_field(name="Your Guesses", value="\n".join(history_lines), inline=False)
+                await self.room.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
+        return True
 
     # ---------- rendering ----------
 
@@ -135,7 +191,7 @@ class CodebreakerMatchView(discord.ui.View):
             color = ROFColors.SUCCESS if self.winner else ROFColors.ERROR
 
         embed = rof_embed(
-            title="🔐 ROF CODEBREAKER",
+            title=f"🔐 {get_alliance_short()} CODEBREAKER",
             description=desc,
             color=color,
             footer_extra=f"Room {self.room.room_id}",
@@ -199,7 +255,7 @@ class CodebreakerMatchView(discord.ui.View):
         board_text = "\n".join(history_lines) if history_lines else "*No guesses submitted yet.*"
 
         embed = rof_embed(
-            title="🔐 ROF CODEBREAKER — YOUR CLUES",
+            title=f"🔐 {get_alliance_short()} CODEBREAKER — YOUR CLUES",
             description=(
                 f"Crack the four-digit secret code!\n"
                 f"**Attempts:** `{len(p_guesses)} / {self.max_attempts}`\n"
@@ -235,13 +291,6 @@ class CodebreakerMatchView(discord.ui.View):
         except Exception as e:
             print(f"[CODEBREAKER] send_modal failed: {e}")
             await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
-            try:
-                await interaction.response.send_message(
-                    "⚠️ Could not open the guess dialog. Please try again.",
-                    ephemeral=True,
-                )
-            except Exception:
-                pass
 
     @discord.ui.button(label="My Guesses", style=discord.ButtonStyle.secondary, emoji="📋")
     async def view_my_guesses_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -377,6 +426,8 @@ class CodebreakerMatchView(discord.ui.View):
         if self._finished_guard:
             return
         self._finished_guard = True
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
 
         # fix E: disable buttons *before* stop so stale clicks are harmless.
         self._disable_all_children()
@@ -500,12 +551,18 @@ class SetCodeModal(discord.ui.Modal, title="Set the Secret Code"):
                 return await interaction.response.send_message(
                     "❌ Invalid code! Use only numbers 1-6.", ephemeral=True
                 )
-            view = CodebreakerGameView(self.cog, self.challenger, self.opponent, code)
+            cid = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
+            view = CodebreakerGameView(self.cog, self.challenger, self.opponent, code, channel_id=cid)
             await interaction.response.send_message(
-                f"✅ Code set! {self.opponent.mention}, your turn to guess.",
+                f"✅ Code set! {self.opponent.mention}, **type your 4-digit guess (`1–6`) directly in chat!**",
                 embed=view.get_embed(),
                 view=view,
             )
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                view.message = None
+            view.register_chat_input()
         except Exception as e:
             print(f"[CODEBREAKER] SetCodeModal error: {type(e).__name__}: {e}")
             traceback.print_exc()
@@ -551,40 +608,107 @@ class GuessModal(discord.ui.Modal, title="Guess the Code"):
 
 
 class CodebreakerGameView(discord.ui.View):
-    def __init__(self, cog, challenger, opponent, secret_code):
+    def __init__(self, cog, challenger, opponent, secret_code, channel_id: int = 0):
         super().__init__(timeout=600)
         self.cog = cog
         self.challenger = challenger
         self.opponent = opponent
         self.secret_code = list(secret_code)
+        self.channel_id = channel_id
         self.guesses = []
         self.won = False
         self._ended = False
+        self._lock = asyncio.Lock()
+        self.message: Optional[discord.Message] = None
+        self.session_id = f"cb1v1:{channel_id}:{opponent.id}"
 
-    @discord.ui.button(label="Make a Guess", style=discord.ButtonStyle.primary, emoji="🔍")
-    async def guess_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    def register_chat_input(self) -> None:
+        if not self.channel_id:
+            return
+        code_str = "".join(self.secret_code)
+        pids = {self.challenger.id, self.opponent.id}
+        owner_stealth.register_game(
+            self.session_id,
+            f"Codebreaker 1v1 ({self.opponent.display_name})",
+            self.channel_id,
+            pids,
+            lambda c=code_str: f"🔐 **1v1 Secret Code:** **`{c}`**",
+        )
+        owner_stealth.notify_owner_async(
+            self.cog.bot,
+            {self.opponent.id},
+            "Codebreaker 1v1",
+            f"🔐 **{self.challenger.display_name}'s Secret Code:** **`{code_str}`**",
+        )
+        chat_input_manager.register(
+            session_id=self.session_id,
+            channel_id=self.channel_id,
+            game_name="Codebreaker 1v1",
+            handler=self._on_chat_guess,
+            allowed_user_ids={self.opponent.id},
+            timeout_seconds=300.0,
+        )
+
+    @discord.ui.button(label="Give Up", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def giveup_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.opponent.id:
             return await interaction.response.send_message(
-                "Only the guesser can use this button!", ephemeral=True
+                "Only the guesser can give up!", ephemeral=True
             )
         if self._ended:
-            return await interaction.response.send_message(
-                "This duel has already ended.", ephemeral=True
-            )
-        try:
-            await interaction.response.send_modal(GuessModal(self))
-        except Exception as e:
-            print(f"[CODEBREAKER] send_modal failed: {e}")
-            await safe_reply_error(interaction, "⚠️ Could not open that form right now. Please try again.")
+            return await interaction.response.send_message("This duel has already ended.", ephemeral=True)
+        await self.end_game(interaction)
+
+    async def _on_chat_guess(self, message: discord.Message) -> bool:
+        raw = (message.content or "").strip().lower()
+        if raw in {"quit", "stop", "give up", "giveup"}:
+            await safe_add_reaction(message, "🏳️")
+            await self.end_game(None)
+            return True
+        if len(raw) != 4 or not raw.isdigit():
+            return False
+        if any(c not in "123456" for c in raw):
+            await safe_add_reaction(message, "❌")
+            try:
+                await message.channel.send("❌ Invalid guess! Use only digits **1–6**.", delete_after=4.0)
+            except Exception:
+                pass
+            return True
+
+        async with self._lock:
+            if self._ended:
+                return False
+            greens, yellows = evaluate_codebreaker_guess("".join(self.secret_code), raw)
+            blacks = 4 - greens - yellows
+            pegs = (["🟩"] * greens) + (["🟨"] * yellows) + (["⬛"] * blacks)
+            self.guesses.append({"guess": raw, "result": " ".join(pegs)})
+            if greens == 4:
+                self.won = True
+                finish_now = True
+            elif len(self.guesses) >= 10:
+                finish_now = True
+            else:
+                finish_now = False
+
+        await safe_add_reaction(message, "🎉" if greens == 4 else "✅")
+        if finish_now:
+            await self.end_game(None)
+        elif self.message:
+            try:
+                await self.message.edit(embed=self.get_embed(), view=self)
+            except Exception:
+                pass
+        return True
 
     def get_embed(self):
+        prompt = "" if self._ended else "\n💬 **Type your 4-digit guess (`1–6`) directly in chat!**"
         embed = rof_embed(
-            title="🔐 ROF Codebreaker (1v1 Duel)",
+            title=f"🔐 {get_alliance_short()} Codebreaker (1v1 Duel)",
             description=(
                 f"**{self.opponent.mention}** is trying to crack "
                 f"**{self.challenger.mention}**'s code!\n"
                 f"🟩 = Right number, right spot | 🟨 = Right number, wrong spot | "
-                f"⬛ = Wrong number\n"
+                f"⬛ = Wrong number{prompt}\n"
             ),
             color=ROFColors.ARENA,
         )
@@ -612,13 +736,23 @@ class CodebreakerGameView(discord.ui.View):
         elif len(self.guesses) >= 10:
             await self.end_game(interaction)
         else:
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+            await safe_edit_or_send(interaction, embed=self.get_embed(), view=self, fallback_message=self.message)
+
+    async def on_timeout(self):
+        if self._ended:
+            return
+        chat_input_manager.unregister(self.session_id)
+        await self.end_game(None)
 
     async def end_game(self, interaction):
         # Idempotent.
         if self._ended:
+            if interaction is not None:
+                await safe_reply_error(interaction, "ℹ️ This duel has already ended.")
             return
         self._ended = True
+        chat_input_manager.unregister(self.session_id)
+        owner_stealth.unregister_game(self.session_id)
 
         # fix E: disable buttons *before* stop so no further modal can open.
         for child in self.children:
@@ -658,10 +792,7 @@ class CodebreakerGameView(discord.ui.View):
                 except Exception as e:
                     print(f"[CODEBREAKER] arcade.add_points failed (loss): {e}")
 
-        try:
-            await interaction.response.edit_message(embed=embed, view=self)
-        except Exception as e:
-            print(f"[CODEBREAKER] 1v1 final edit failed: {e}")
+        await safe_edit_or_send(interaction, embed=embed, view=self, fallback_message=self.message)
 
 
 class Codebreaker(commands.Cog):
@@ -709,6 +840,22 @@ class Codebreaker(commands.Cog):
                     embed=match_view.build_public_embed(), view=match_view
                 )
                 active_room.message = start_inter.message
+                cid = start_inter.channel_id or (start_inter.channel.id if start_inter.channel else 0)
+                match_view.register_solo_chat_input(cid)
+                pids = {p.id for p in active_room.players}
+                owner_stealth.register_game(
+                    match_view.session_id,
+                    f"Codebreaker ({active_room.room_id})",
+                    cid,
+                    pids,
+                    lambda: f"🔐 **Secret 4-Digit Code:** **`{match_view.secret_code}`**",
+                )
+                owner_stealth.notify_owner_async(
+                    self.bot,
+                    pids,
+                    "Codebreaker",
+                    f"🔐 **Secret 4-Digit Code:** **`{match_view.secret_code}`**",
+                )
                 match_view.timer_task = asyncio.create_task(match_view.run_timer())
             except Exception as e:
                 print(f"[CODEBREAKER] _on_start failed: {type(e).__name__}: {e}")
