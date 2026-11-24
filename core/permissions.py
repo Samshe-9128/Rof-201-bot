@@ -24,7 +24,7 @@ def is_admin_interaction(interaction: discord.Interaction) -> bool:
 async def ensure_owner(interaction: discord.Interaction) -> bool:
     if is_owner_user(interaction.user.id):
         return True
-    short = (db.get_config("alliance_short", BRAND_SHORT) or BRAND_SHORT).strip()
+    short = BRAND_SHORT
     msg = f"🔒 Access Denied: Only the **{short} Bot Owner** can perform this action."
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
@@ -36,7 +36,7 @@ async def ensure_owner(interaction: discord.Interaction) -> bool:
 async def ensure_admin(interaction: discord.Interaction) -> bool:
     if is_admin_interaction(interaction):
         return True
-    short = (db.get_config("alliance_short", BRAND_SHORT) or BRAND_SHORT).strip()
+    short = BRAND_SHORT
     msg = f"🔒 Access Denied: Only **Authorized {short} Administrators** can perform this action."
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)

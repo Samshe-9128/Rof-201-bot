@@ -3,7 +3,7 @@ import logging
 import sys
 
 
-def get_logger(name: str = "rof_bot") -> logging.Logger:
+def get_logger(name: str = "haven_bot") -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
@@ -18,4 +18,4 @@ def get_logger(name: str = "rof_bot") -> logging.Logger:
     return logger
 
 
-log = get_logger("rof_bot")
+log = get_logger("haven_bot")

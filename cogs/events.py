@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from core.config import (
-    DEFAULT_TZ_OFFSET, EVENT_CHANNEL_ID, ROFColors,
+    DEFAULT_TZ_OFFSET, EVENT_CHANNEL_ID, HAVColors,
     format_dual_timestamps, format_tz_label, get_game_tz,
 )
 from core.database import db
 from core.permissions import ensure_admin, is_admin_interaction
-from core.ui import get_alliance_short, safe_reply_error, PaginatedEmbedView, rof_embed
+from core.ui import get_alliance_short, safe_reply_error, PaginatedEmbedView, hav_embed
 
 
 # ==============================================================================
@@ -170,15 +170,15 @@ def build_event_detail_embed(ev: dict,
         )
         if ev.get("description"):
             desc += f"\n\n**Description:**\n{ev['description']}"
-        color = ROFColors.SUCCESS if status == "SCHEDULED" else ROFColors.ERROR
-        return rof_embed(title=title_prefix, description=desc, color=color,
+        color = HAVColors.SUCCESS if status == "SCHEDULED" else HAVColors.ERROR
+        return hav_embed(title=title_prefix, description=desc, color=color,
                          footer_extra=f"Event ID: {ev.get('id', '?')}")
     except Exception as e:
         print(f"[EVENTS] build_event_detail_embed failed: {type(e).__name__}: {e}")
-        return rof_embed(
+        return hav_embed(
             title=title_prefix,
             description="⚠️ This event has malformed data and cannot be displayed correctly.",
-            color=ROFColors.ERROR,
+            color=HAVColors.ERROR,
             footer_extra=f"Event ID: {ev.get('id', '?') if isinstance(ev, dict) else '?'}",
         )
 
@@ -403,7 +403,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
         elif target_channel:
             try:
                 dual = format_dual_timestamps(event_dt, tz_off)
-                ann_embed = rof_embed(
+                ann_embed = hav_embed(
                     title=f"📢 {get_alliance_short()} EVENT SCHEDULED — {created['name'].upper()}",
                     description=(
                         (f"{created['description']}\n\n" if created.get("description") else "")
@@ -413,7 +413,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
                           f"🌍 **Your Time:** {dual['discord_full']} ({dual['discord_relative']})\n"
                           f"🔔 **Reminder:** {_format_reminder(rem_val)}\n"
                           f"🔁 **Schedule:** {_format_repeat(rep_val)}"),
-                    color=ROFColors.GOLD, footer_extra=f"Event ID: {event_id}")
+                    color=HAVColors.GOLD, footer_extra=f"Event ID: {event_id}")
                 await target_channel.send(embed=ann_embed)
                 ann_status = f"📢 Announced in <#{target_channel.id}>"
             except Exception as e:
@@ -431,7 +431,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
                     "game_time_short": event_dt.strftime("%H:%M"),
                     "india_time_short": "?"}
 
-        confirm_embed = rof_embed(
+        confirm_embed = hav_embed(
             title="✅ EVENT CREATED",
             description=(
                 f"**Event:** {created['name']}\n"
@@ -442,7 +442,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
                 f"**Reminder:** {_format_reminder(rem_val)}\n"
                 f"**Repeat:** {_format_repeat(rep_val)} | **Announcements:** {_format_announce(1 if self.announce_enabled else 0)}\n"
                 f"{ann_status}"),
-            color=ROFColors.SUCCESS, footer_extra=f"Event ID: {created['id']}")
+            color=HAVColors.SUCCESS, footer_extra=f"Event ID: {created['id']}")
         view = EventConfirmationView(self.cog, created["id"])
         await interaction.followup.send(embed=confirm_embed, view=view, ephemeral=True)
 
@@ -722,14 +722,14 @@ class Events(commands.Cog):
                 lead_line = (f"⚔️ **{ev_name}** is starting now!"
                              if rem_mins <= 0
                              else f"⚔️ **{ev_name}** starts in **{rem_mins} minutes**!")
-                embed = rof_embed(
+                embed = hav_embed(
                     title=f"🔔 {get_alliance_short()} EVENT REMINDER — {ev_name.upper()}",
                     description=(f"{lead_line}\n"
                                  + (f"\n{ev['description']}\n\n" if ev.get("description") else "\n")
                                  + f"🕒 **Game Time:** `{dual['game_time']}`\n"
                                    f"🇮🇳 **India Time:** `{dual['india_time']}`\n"
                                    f"🌍 **Discord Timestamp:** {dual['discord_full']} ({dual['discord_relative']})"),
-                    color=ROFColors.WARNING, footer_extra=f"Event ID: {ev_id}")
+                    color=HAVColors.WARNING, footer_extra=f"Event ID: {ev_id}")
                 await channel.send(
                     content=f"@everyone 🔔 **{get_alliance_short()} Alliance Event Reminder!**",
                     embed=embed,
@@ -759,9 +759,9 @@ class Events(commands.Cog):
         short = get_alliance_short()
         if not upcoming:
             return await interaction.response.send_message(
-                embed=rof_embed(title=f"📅 {short} UPCOMING EVENTS",
+                embed=hav_embed(title=f"📅 {short} UPCOMING EVENTS",
                                 description="No upcoming events are currently scheduled. ⚔️",
-                                color=ROFColors.INFO),
+                                color=HAVColors.INFO),
                 ephemeral=True)
         tz_off = _safe_tz_off()
         tz_label = format_tz_label(tz_off)
@@ -769,10 +769,10 @@ class Events(commands.Cog):
         pages: List[discord.Embed] = []
         for idx in range(0, len(upcoming), per_page):
             chunk = upcoming[idx:idx + per_page]
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"⚔️ {short} UPCOMING ALLIANCE EVENTS",
                 description=f"All times shown in **Game Time (`{tz_label}`)**, **India Time (`IST`)**, and your local time:",
-                color=ROFColors.ARENA)
+                color=HAVColors.ARENA)
             for ev in chunk:
                 try:
                     dt = _parse_iso_utc(ev.get("start_time_utc"))
@@ -821,6 +821,7 @@ class Events(commands.Cog):
         name="events",
         description="View upcoming alliance events in Game Time & India Time",
     )
+    @app_commands.checks.cooldown(1, 3.0)
     async def list_events(self, interaction: discord.Interaction):
         await self._send_events_list(interaction)
 

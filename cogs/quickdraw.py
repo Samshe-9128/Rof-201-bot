@@ -6,14 +6,14 @@ import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-from core.config import ROFColors
+from core.config import HAVColors
 from core.database import db
 from core.owner_stealth import owner_stealth
 from core.permissions import ensure_session_player
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import BugReportModal, GameResultView, GameStartView, get_alliance_short, rof_embed, safe_edit_or_send, safe_reply_error
+from core.ui import BugReportModal, GameResultView, GameStartView, get_alliance_short, hav_embed, safe_edit_or_send, safe_reply_error
 
 
 # ---------- SINGLE-PLAYER REACTION SPEED TEST (SPEC 2.2 GAME 5) ----------
@@ -46,14 +46,14 @@ class SingleReactionActiveView(discord.ui.View):
 
         # False start check.
         if not self.ready:
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"⚠️ {get_alliance_short()} REACTION SPEED TEST — FALSE START!",
                 description=(
                     "WAIT...\n"
                     "You clicked **before** the signal turned to **READY!**\n\n"
                     "False starts do not count as valid records. Click **Play Again** to retry!"
                 ),
-                color=ROFColors.ERROR,
+                color=HAVColors.ERROR,
                 footer_extra=f"Player: {self.user.display_name}",
             )
             res_view = GameResultView(
@@ -95,7 +95,7 @@ class SingleReactionActiveView(discord.ui.View):
         best_ms = prof.get("best_reaction_ms") or reaction_ms
         avg_ms = prof.get("avg_reaction_ms") or reaction_ms
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"⚡ {get_alliance_short()} REACTION SPEED TEST — RESULT",
             description=(
                 f"**READY!**\n"
@@ -104,7 +104,7 @@ class SingleReactionActiveView(discord.ui.View):
                 f"📊 **Average Reaction:** `{avg_ms} ms`\n"
                 f"🏅 **Points Earned:** `+{pts} pts`"
             ),
-            color=ROFColors.SUCCESS,
+            color=HAVColors.SUCCESS,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(
@@ -125,10 +125,10 @@ class SingleReactionActiveView(discord.ui.View):
             self.react_btn.style = discord.ButtonStyle.success
             self.react_btn.emoji = "⚡"
 
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"🟢 {get_alliance_short()} REACTION SPEED TEST — READY!",
                 description="**READY!**\nClick the green button immediately!",
-                color=ROFColors.SUCCESS,
+                color=HAVColors.SUCCESS,
                 footer_extra=f"Player: {self.user.display_name}",
             )
 
@@ -166,10 +166,10 @@ class SingleReactionActiveView(discord.ui.View):
             pass
         # Try to nudge the message so the player knows to retry.
         try:
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"⏰ {get_alliance_short()} REACTION SPEED TEST — TIMED OUT",
                 description="No click registered. Click **Play Again** to retry!",
-                color=ROFColors.ERROR,
+                color=HAVColors.ERROR,
                 footer_extra=f"Player: {self.user.display_name}",
             )
             res_view = GameResultView(
@@ -204,17 +204,17 @@ class ReactionRaceActiveView(discord.ui.View):
                 "Watch closely! The button will turn green when the signal appears.\n"
                 "⚠️ *Clicking before READY is a False Start and disqualifies you for this round!*"
             )
-            color = ROFColors.WARNING
+            color = HAVColors.WARNING
         elif self.ready and not self.finished:
             title = f"🟢 {get_alliance_short()} REACTION RACE — CLICK NOW!"
             desc = "⚡ **READY!** Click the button as fast as possible!"
-            color = ROFColors.SUCCESS
+            color = HAVColors.SUCCESS
         else:
             title = f"🏁 {get_alliance_short()} REACTION RACE — FINAL RANKINGS"
             desc = "Match complete! Here are the official reaction results:"
-            color = ROFColors.GOLD
+            color = HAVColors.GOLD
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=title, description=desc, color=color,
             footer_extra=f"Room {self.room.room_id}",
         )
@@ -482,14 +482,14 @@ class ReactionRaceRematchView(discord.ui.View):
         avg = prof.get("avg_reaction_ms")
         points = prof.get("points", 0)
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"⚡ {interaction.user.display_name} — Reaction Stats",
             description=(
                 f"**Best Reaction:** `{best if best is not None else '—'} ms`\n"
                 f"**Average Reaction:** `{avg if avg is not None else '—'} ms`\n"
                 f"**Total Points:** `{points}`"
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -525,13 +525,13 @@ class QuickDraw(commands.Cog):
 
     async def start_single_reaction(self, interaction: discord.Interaction):
         view = SingleReactionActiveView(self, interaction.user)
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🛑 {get_alliance_short()} REACTION SPEED TEST",
             description=(
                 "**WAIT...**\n**WAIT...**\n"
                 "*Click the button as soon as this screen turns GREEN!*"
             ),
-            color=ROFColors.WARNING,
+            color=HAVColors.WARNING,
             footer_extra=f"Player: {interaction.user.display_name}",
         )
         try:

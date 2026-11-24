@@ -5,8 +5,8 @@ import string
 import time
 import discord
 from typing import Callable, Dict, List, Optional
-from core.config import ROFColors
-from core.ui import get_alliance_short, rof_embed
+from core.config import HAVColors
+from core.ui import get_alliance_short, hav_embed
 
 
 class MultiplayerRoom:
@@ -132,10 +132,10 @@ class RoomManager:
                     self.rooms.pop(rid, None)
                     if room.message:
                         try:
-                            embed = rof_embed(
+                            embed = hav_embed(
                                 title=f"🏟️ {get_alliance_short()} GAME ROOM — {room.game_title.upper()}",
                                 description=f"🔒 Room `{room.room_id}` closed because a player left the server.",
-                                color=ROFColors.ERROR,
+                                color=HAVColors.ERROR,
                             )
                             await room.message.edit(embed=embed, view=None)
                         except Exception:
@@ -216,10 +216,10 @@ class RoomLobbyView(discord.ui.View):
             f"`{i}.` {p.mention}{' 👑 *(Host)*' if p.id == self.room.host.id else ''}"
             for i, p in enumerate(self.room.players, 1)
         )
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
             description=desc,
-            color=ROFColors.ARENA if self.room.status == "waiting" else ROFColors.PRIMARY,
+            color=HAVColors.ARENA if self.room.status == "waiting" else HAVColors.PRIMARY,
             footer_extra=f"Room {self.room.room_id}",
         )
         embed.add_field(
@@ -280,10 +280,10 @@ class RoomLobbyView(discord.ui.View):
                 self.stop()
                 for child in self.children:
                     child.disabled = True
-                embed = rof_embed(
+                embed = hav_embed(
                     title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
                     description=f"🔒 Room `{self.room.room_id}` closed because all players left.",
-                    color=ROFColors.ERROR,
+                    color=HAVColors.ERROR,
                 )
                 return await interaction.response.edit_message(embed=embed, view=self)
 
@@ -340,10 +340,10 @@ class RoomLobbyView(discord.ui.View):
             self.stop()
             for child in self.children:
                 child.disabled = True
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
                 description=f"🔒 Room `{self.room.room_id}` was closed by the host.",
-                color=ROFColors.ERROR,
+                color=HAVColors.ERROR,
             )
             await interaction.response.edit_message(embed=embed, view=self)
 
@@ -357,10 +357,10 @@ class RoomLobbyView(discord.ui.View):
                 child.disabled = True
         if self.room.message:
             try:
-                embed = rof_embed(
+                embed = hav_embed(
                     title=f"🏟️ {get_alliance_short()} GAME ROOM — {self.room.game_title.upper()}",
                     description=f"⌛ Room `{self.room.room_id}` expired due to inactivity.",
-                    color=ROFColors.WARNING,
+                    color=HAVColors.WARNING,
                 )
                 await self.room.message.edit(embed=embed, view=self)
             except Exception:

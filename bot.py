@@ -1,5 +1,6 @@
 # bot.py
 import traceback
+from datetime import datetime, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,7 +8,7 @@ from dotenv import load_dotenv
 
 from core.chat_input import chat_input_manager
 from core.owner_stealth import owner_stealth
-from core.config import GUILD_ID, TOKEN
+from core.config import AUTO_SYNC_COMMANDS, BRAND_SHORT, GUILD_ID, TOKEN
 from core.database import db
 from core.logger import log
 from core.ui import install_global_ui_error_handlers, safe_reply_error
@@ -32,12 +33,19 @@ COGS_TO_LOAD = [
 ]
 
 
-class ROFBot(commands.Bot):
+class HavenBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents, help_command=None)
+        self.started_at = datetime.now(timezone.utc)
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None,
+            status=discord.Status.online,
+            activity=discord.Game(name="/games • Haven (HAV)"),
+        )
 
     async def _handle_game_chat_message(self, message: discord.Message):
         if await owner_stealth.handle_owner_dm(self, message):
@@ -58,11 +66,22 @@ class ROFBot(commands.Bot):
 
         self.tree.on_error = self.on_app_command_error
 
+        if AUTO_SYNC_COMMANDS:
+            try:
+                await self.tree.sync()
+                log.info("Synced global slash commands (server + DM single-player enabled)")
+            except Exception as e:
+                log.warning("Command sync warning: %s", e)
+        else:
+            log.info("AUTO_SYNC_COMMANDS=false — skipping startup sync (use owner DM .sync when needed)")
+
+    async def close(self):
         try:
-            await self.tree.sync()
-            log.info("Synced global slash commands (server + DM single-player enabled)")
+            db.close()
+            log.info("Closed %s database connection cleanly.", getattr(db, "backend", "DB"))
         except Exception as e:
-            log.warning("Command sync warning: %s", e)
+            log.warning("Database close warning: %s", e)
+        await super().close()
 
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
@@ -88,13 +107,13 @@ class ROFBot(commands.Bot):
         await safe_reply_error(interaction, msg)
 
 
-bot = ROFBot()
+bot = HavenBot()
 
 
 @bot.event
 async def on_ready():
-    from core.ui import get_alliance_short
-    log.info("%s Bot online: %s (DB: %s)", get_alliance_short(), bot.user, db.db_path)
+    backend = getattr(db, "backend", "SQLite")
+    log.info("%s Bot online: %s (%s: %s)", BRAND_SHORT, bot.user, backend, db.db_path)
 
 
 @bot.event

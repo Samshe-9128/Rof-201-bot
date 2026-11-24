@@ -3,42 +3,26 @@ import asyncio
 import traceback
 import discord
 from typing import Callable, List, Optional
-from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, OWNER_ID, ROFColors
-from core.database import db
+from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, OWNER_ID, HAVColors
 from core.permissions import ensure_session_player
 
 
 def get_alliance_short() -> str:
-    try:
-        val = db.get_config("alliance_short", BRAND_SHORT)
-        return (val or BRAND_SHORT).strip()
-    except Exception:
-        return BRAND_SHORT
+    return BRAND_SHORT
 
 
 def get_alliance_name() -> str:
-    try:
-        val = db.get_config("alliance_name", BRAND_NAME)
-        return (val or BRAND_NAME).strip()
-    except Exception:
-        return BRAND_NAME
+    return BRAND_NAME
 
 
 def get_alliance_footer() -> str:
-    try:
-        custom = db.get_config("alliance_footer", "")
-        if custom and custom.strip():
-            return custom.strip()
-        short = get_alliance_short()
-        return f"{short} Gaming & Alliance System"
-    except Exception:
-        return BRAND_FOOTER
+    return BRAND_FOOTER
 
 
-def rof_embed(
+def hav_embed(
     title: str,
     description: str = "",
-    color: int = ROFColors.PRIMARY,
+    color: int = HAVColors.PRIMARY,
     footer_extra: str = "",
     thumbnail_url: Optional[str] = None,
 ) -> discord.Embed:
@@ -68,7 +52,7 @@ class BugReportModal(discord.ui.Modal, title="🐛 Report a Bug to the Bot Owner
         required=True,
     )
 
-    def __init__(self, context_label: str = "ROF Bot"):
+    def __init__(self, context_label: str = "HAV Bot"):
         super().__init__()
         self.context_label = context_label
 
@@ -95,10 +79,10 @@ class BugReportModal(discord.ui.Modal, title="🐛 Report a Bug to the Bot Owner
                             if interaction.guild and interaction.channel
                             else "Direct Message"
                         )
-                        emb = rof_embed(
+                        emb = hav_embed(
                             title="🐛 PRIVATE BUG REPORT",
                             description=report_text[:3500],
-                            color=ROFColors.WARNING,
+                            color=HAVColors.WARNING,
                             footer_extra=f"Context: {self.context_label}",
                         )
                         emb.add_field(
@@ -134,7 +118,7 @@ class BugReportModal(discord.ui.Modal, title="🐛 Report a Bug to the Bot Owner
 class BugReportPromptView(discord.ui.View):
     """Lightweight private button so a player can send a bug report directly to the Owner."""
 
-    def __init__(self, context_label: str = "ROF Bot", timeout: float = 300.0):
+    def __init__(self, context_label: str = "HAV Bot", timeout: float = 300.0):
         super().__init__(timeout=timeout)
         self.context_label = context_label
 
@@ -312,10 +296,10 @@ class GameStartView(discord.ui.View):
             await safe_reply_error(interaction, "⚠️ Could not update difficulty. Please try again.")
 
     def build_embed(self) -> discord.Embed:
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🎮 {self.game_title}",
             description=self.short_desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
         embed.add_field(name="📖 How to Play", value=self.how_to_play, inline=False)
@@ -342,10 +326,10 @@ class GameStartView(discord.ui.View):
 
     @discord.ui.button(label="How to Play", style=discord.ButtonStyle.secondary, emoji="ℹ️", row=1)
     async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"ℹ️ {self.game_title} — Instructions",
             description=self.how_to_play,
-            color=ROFColors.INFO,
+            color=HAVColors.INFO,
         )
         embed.add_field(name="⏱️ Timing & Scoring", value=self.timer_info, inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -357,7 +341,7 @@ class GameStartView(discord.ui.View):
         self.stop()
         for child in self.children:
             child.disabled = True
-        embed = rof_embed(title=f"🎮 {self.game_title}", description="*Session closed.*", color=ROFColors.PRIMARY)
+        embed = hav_embed(title=f"🎮 {self.game_title}", description="*Session closed.*", color=HAVColors.PRIMARY)
         try:
             await interaction.response.edit_message(embed=embed, view=self)
         except Exception:
@@ -411,9 +395,9 @@ class GameResultView(discord.ui.View):
         try:
             prof = db.get_player_profile(interaction.user.id)
             gstat = prof["game_stats"].get(self.game_name, {})
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"📊 {interaction.user.display_name} — {self.game_name} Statistics",
-                color=ROFColors.ARENA,
+                color=HAVColors.ARENA,
                 thumbnail_url=interaction.user.display_avatar.url if hasattr(interaction.user, "display_avatar") else None,
             )
             embed.add_field(name="Games Played", value=f"**{gstat.get('played', 0)}**", inline=True)

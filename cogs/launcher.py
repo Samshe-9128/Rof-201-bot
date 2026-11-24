@@ -1,15 +1,15 @@
+from datetime import datetime, timezone
 # cogs/launcher.py
 import traceback
-from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import DEFAULT_TZ_OFFSET, ROFColors, format_tz_label, get_rank
+from core.config import DEFAULT_TZ_OFFSET, HAVColors, format_tz_label
 from core.database import db
 from core.rooms import room_manager
-from core.ui import get_alliance_name, get_alliance_short, rof_embed
+from core.ui import get_alliance_name, get_alliance_short, hav_embed
 
 
 SINGLE_PLAYER_CATALOG = [
@@ -99,10 +99,10 @@ class SinglePlayerMenuView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         lines = [f"• **{title}** — {desc}" for _, title, desc in SINGLE_PLAYER_CATALOG]
-        return rof_embed(
+        return hav_embed(
             title=f"🎯 {get_alliance_short()} GAMING ARENA — SINGLE PLAYER",
             description="Select any game from the menu below to start playing immediately:\n\n" + "\n".join(lines),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -244,13 +244,13 @@ class MultiplayerMenuView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         lines = [f"• **{title}** — {desc}" for _, title, desc in MULTIPLAYER_CATALOG]
-        return rof_embed(
+        return hav_embed(
             title=f"🏟️ {get_alliance_short()} GAMING ARENA — MULTIPLAYER",
             description=(
                 "Choose a multiplayer game below to create a **Public Game Room** "
                 "in this channel so alliance members can join:\n\n" + "\n".join(lines)
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Host: {self.user.display_name}",
         )
 
@@ -355,7 +355,7 @@ class GamingArenaMainView(discord.ui.View):
             room_count = 0
 
         short = get_alliance_short()
-        return rof_embed(
+        return hav_embed(
             title=f"🎮 {short} GAMING ARENA",
             description=(
                 f"Welcome to the **{short} Gaming Arena**!\n"
@@ -367,7 +367,7 @@ class GamingArenaMainView(discord.ui.View):
                 "👤 **My Profile** — Personal win rate, best score, reaction stats & match history\n"
                 f"📖 **Game Help** — Rules and tips for every {short} game"
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -411,13 +411,13 @@ class GamingArenaMainView(discord.ui.View):
             rooms = []
 
         if not rooms:
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"🔥 {get_alliance_short()} ACTIVE GAMES",
                 description=(
                     "There are no open multiplayer rooms right now.\n"
                     "Click **Multiplayer** to host a new room!"
                 ),
-                color=ROFColors.INFO,
+                color=HAVColors.INFO,
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -435,10 +435,10 @@ class GamingArenaMainView(discord.ui.View):
             except Exception as e:
                 print(f"[LAUNCHER] room render failed: {e}")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🔥 {get_alliance_short()} ACTIVE MULTIPLAYER ROOMS",
             description="\n".join(lines) or "*No rooms to display.*",
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -492,10 +492,10 @@ class GamingArenaMainView(discord.ui.View):
 
 def build_game_help_embed() -> discord.Embed:
     short = get_alliance_short()
-    embed = rof_embed(
+    embed = hav_embed(
         title=f"📖 {short} GAMING ARENA — COMPLETE GUIDE",
         description=f"Every {short} game is designed for fast, interactive play on both desktop and mobile Discord.",
-        color=ROFColors.INFO,
+        color=HAVColors.INFO,
     )
     embed.add_field(
         name="🎯 Single-Player Games",
@@ -541,6 +541,7 @@ class Launcher(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="games", description="Open the central Gaming Arena menu")
+    @app_commands.checks.cooldown(1, 3.0)
     async def games_cmd(self, interaction: discord.Interaction):
         try:
             view = GamingArenaMainView(self.bot, interaction.user)
@@ -560,6 +561,7 @@ class Launcher(commands.Cog):
                 pass
 
     @app_commands.command(name="help", description="View the complete Alliance Bot command & feature guide")
+    @app_commands.checks.cooldown(1, 3.0)
     async def help_cmd(self, interaction: discord.Interaction):
         short = get_alliance_short()
         full_name = get_alliance_name()
@@ -569,10 +571,10 @@ class Launcher(commands.Cog):
             tz_off = float(DEFAULT_TZ_OFFSET)
         tz_label = format_tz_label(tz_off)
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🛡️ {short} ALLIANCE BOT — COMMAND CENTER",
             description=f"Welcome to the official **{full_name}** gaming and alliance assistant!",
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         embed.add_field(
             name="🎮 Gaming Commands",
@@ -613,6 +615,34 @@ class Launcher(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+    @app_commands.command(name="ping", description="Check bot latency, uptime, and database status")
+    @app_commands.checks.cooldown(1, 3.0)
+    async def ping_cmd(self, interaction: discord.Interaction):
+        latency_ms = round(self.bot.latency * 1000)
+        started = getattr(self.bot, "started_at", None)
+        if started is not None:
+            secs = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+            days, rem = divmod(secs, 86400)
+            hrs, rem = divmod(rem, 3600)
+            mins, s = divmod(rem, 60)
+            uptime_str = f"{days}d {hrs}h {mins}m {s}s" if days else f"{hrs}h {mins}m {s}s"
+        else:
+            uptime_str = "Online"
+
+        backend = getattr(db, "backend", "SQLite")
+        short = get_alliance_short()
+        embed = hav_embed(
+            title=f"🏓 {short} BOT STATUS",
+            description=(
+                f"• **Latency:** `{latency_ms} ms`\n"
+                f"• **Uptime:** `{uptime_str}`\n"
+                f"• **Database:** `{backend}`\n"
+                f"• **Active Rooms:** `{len(room_manager.get_all_rooms())}`"
+            ),
+            color=HAVColors.SUCCESS if latency_ms < 250 else HAVColors.WARNING,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Launcher(bot))

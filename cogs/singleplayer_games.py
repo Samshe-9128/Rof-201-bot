@@ -4,21 +4,21 @@ import random
 import re
 import time
 import traceback
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import discord
 from discord.ext import commands
 
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
-from core.config import ROFColors
+from core.config import HAVColors
 from core.database import db
 from core.permissions import ensure_session_player
 from core.ui import (
     get_alliance_short,
     GameResultView,
     GameStartView,
-    rof_embed,
+    hav_embed,
     safe_defer,
     safe_edit_or_send,
     safe_reply_error,
@@ -172,10 +172,10 @@ async def _launch_public_game_message(
     if is_ephemeral_source and not interaction.response.is_done():
         try:
             await interaction.response.edit_message(
-                embed=rof_embed(
+                embed=hav_embed(
                     title=f"✅ {game_label} Started!",
                     description="Your game board is live below — **just type your answers directly in chat!**",
-                    color=ROFColors.SUCCESS,
+                    color=HAVColors.SUCCESS,
                 ),
                 view=None,
             )
@@ -307,10 +307,10 @@ class WordScrambleSessionView(discord.ui.View):
             f"💬 **Type your answer directly in chat!** *(Type `hint` or `quit` anytime)*\n"
             f"⏱️ **Time Remaining:** `{mins:02d}:{secs:02d}` (<t:{self.deadline}:R>)"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"🔤 {get_alliance_short()} WORD SCRAMBLE",
             description=desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -500,14 +500,14 @@ class WordScrambleSessionView(discord.ui.View):
         else:
             status_line = f"🎉 **All {self.max_rounds} rounds cleared!** Last word: **`{self.answer}`**."
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🔤 {get_alliance_short()} WORD SCRAMBLE — COMPLETE",
             description=(
                 f"{status_line}\n\n"
                 f"🏆 **Final Score:** `{self.score}`\n"
                 f"🏅 **Arcade Points Earned:** `+{pts} pts`"
             ),
-            color=ROFColors.SUCCESS if won else ROFColors.ERROR,
+            color=HAVColors.SUCCESS if won else HAVColors.ERROR,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(
@@ -601,10 +601,10 @@ class QuickMathSessionView(discord.ui.View):
             f"## `{self.question_str} = ?`\n\n"
             f"💬 **Just type the number directly in chat!** *(Type `quit` to stop)*"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"🧮 {get_alliance_short()} QUICK MATH",
             description=desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -741,7 +741,7 @@ class QuickMathSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] quickmath DB record failed: {type(e).__name__}: {e}")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🧮 {get_alliance_short()} QUICK MATH — TIME UP!",
             description=(
                 f"🏆 **Final Score:** `{self.score}`\n"
@@ -750,7 +750,7 @@ class QuickMathSessionView(discord.ui.View):
                 f"🔥 **Best Streak:** `{self.best_streak}`\n"
                 f"🏅 **Arcade Points Earned:** `+{pts} pts`"
             ),
-            color=ROFColors.SUCCESS if won else ROFColors.WARNING,
+            color=HAVColors.SUCCESS if won else HAVColors.WARNING,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(
@@ -822,10 +822,10 @@ class TriviaSessionView(discord.ui.View):
             f"**Score:** `{self.score}`\n\n"
             f"### {q_item['q']}"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"❓ {get_alliance_short()} TRIVIA CHALLENGE",
             description=desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -925,7 +925,7 @@ class TriviaSessionView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] trivia DB record failed: {type(e).__name__}: {e}")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"❓ {get_alliance_short()} TRIVIA — COMPLETE",
             description=(
                 f"{self.last_explanation}\n\n"
@@ -933,7 +933,7 @@ class TriviaSessionView(discord.ui.View):
                 f"✅ **Correct:** `{self.correct_count} / {total}` (`{acc}%` accuracy)\n"
                 f"🏅 **Arcade Points Earned:** `+{pts} pts`"
             ),
-            color=ROFColors.SUCCESS if won else ROFColors.WARNING,
+            color=HAVColors.SUCCESS if won else HAVColors.WARNING,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(
@@ -979,10 +979,10 @@ class SingleRPSView(discord.ui.View):
             f"(Draws: `{self.draws}`)\n\n"
             f"{self.last_round_text}"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"✂️ {get_alliance_short()} ROCK PAPER SCISSORS",
             description=desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -1082,7 +1082,7 @@ class SingleRPSView(discord.ui.View):
         except Exception as e:
             print(f"[SINGLE] rps DB record failed: {type(e).__name__}: {e}")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"✂️ {get_alliance_short()} ROCK PAPER SCISSORS — MATCH OVER",
             description=(
                 f"{self.last_round_text}\n\n"
@@ -1090,7 +1090,7 @@ class SingleRPSView(discord.ui.View):
                 f"🏆 **Result:** {'YOU WIN!' if won else 'BOT WINS!'}\n"
                 f"🏅 **Arcade Points:** `+{pts} pts`"
             ),
-            color=ROFColors.SUCCESS if won else ROFColors.ERROR,
+            color=HAVColors.SUCCESS if won else HAVColors.ERROR,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(
@@ -1177,10 +1177,10 @@ class NumberGuessSessionView(discord.ui.View):
             f"**Previous Guesses:**\n{hist_str}\n\n"
             f"💬 **Type a number (`{self.low}–{self.high}`) directly in chat!** *(Type `quit` to give up)*"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"🔢 {get_alliance_short()} NUMBER GUESSING",
             description=desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -1308,7 +1308,7 @@ class NumberGuessSessionView(discord.ui.View):
             if won
             else ("🏳️ **GAVE UP!**" if gave_up else "❌ **OUT OF ATTEMPTS!**")
         )
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🔢 {get_alliance_short()} NUMBER GUESSING — RESULT",
             description=(
                 f"{headline}\n\n"
@@ -1316,7 +1316,7 @@ class NumberGuessSessionView(discord.ui.View):
                 f"🎯 **Attempts Used:** `{used} / {self.max_attempts}`\n"
                 f"🏅 **Arcade Points Earned:** `+{pts} pts`"
             ),
-            color=ROFColors.SUCCESS if won else ROFColors.ERROR,
+            color=HAVColors.SUCCESS if won else HAVColors.ERROR,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(
@@ -1407,10 +1407,10 @@ class EmojiGuessSessionView(discord.ui.View):
             f"{hint_line}\n\n"
             f"💬 **Type your answer directly in chat!** *(Type `hint` or `quit` anytime)*"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"🎭 {get_alliance_short()} EMOJI GUESSING",
             description=desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -1542,7 +1542,7 @@ class EmojiGuessSessionView(discord.ui.View):
             if won
             else ("🏳️ **GAVE UP!**" if gave_up else "❌ **OUT OF ATTEMPTS!**")
         )
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🎭 {get_alliance_short()} EMOJI GUESSING — RESULT",
             description=(
                 f"# {self.puzzle['emojis']}\n"
@@ -1551,7 +1551,7 @@ class EmojiGuessSessionView(discord.ui.View):
                 f"🎯 **Attempts Used:** `{self.attempts} / {self.max_attempts}`\n"
                 f"🏅 **Arcade Points:** `+{pts} pts`"
             ),
-            color=ROFColors.SUCCESS if won else ROFColors.ERROR,
+            color=HAVColors.SUCCESS if won else HAVColors.ERROR,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(

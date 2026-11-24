@@ -4,5 +4,12 @@ __pycache__/
 .env
 .vscode/
 backups/
+*.db
 *.db-shm
 *.db-wal
+wordle_stats.json
+wordle_games.json
+wordle_daily.json
+arcade_data.json
+events.json
+rules.json

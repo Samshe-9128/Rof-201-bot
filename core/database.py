@@ -7,12 +7,12 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from core.config import BASE_DIR, DEFAULT_TZ_OFFSET, EVENT_CHANNEL_ID, WELCOME_CHANNEL_ID, RULES_CHANNEL_ID
+from core.config import BASE_DIR, DATA_DIR, DEFAULT_TZ_OFFSET, EVENT_CHANNEL_ID, WELCOME_CHANNEL_ID, RULES_CHANNEL_ID, MONGO_URI, MONGO_DB_NAME
 
-DB_PATH = os.path.join(BASE_DIR, "rof_bot.db")
-BACKUP_DIR = os.path.join(BASE_DIR, "backups")
+DB_PATH = os.path.join(DATA_DIR, "haven_bot.db")
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 
 # Legacy JSON paths preserved for backwards compatibility & syncing
 ARCADE_FILE = os.path.join(BASE_DIR, "arcade_data.json")
@@ -59,21 +59,46 @@ DEFAULT_KNOWLEDGE_ENTRIES = [
     },
     {
         "key": "member_responsibilities",
-        "title": "Alliance Member Responsibilities",
+        "title": "HAV Member Responsibilities",
         "category": "Guides",
-        "content": "Stay active, contribute to alliance tech donations daily, check `/events` for upcoming battles, and treat fellow alliance members with respect.",
+        "content": "Stay active, contribute to alliance tech donations daily, check `/events` for upcoming battles, and treat fellow Haven (HAV) members with respect.",
         "keywords": "member responsibilities duties donations active rules guide",
     },
 ]
 
 
+class _PooledConn:
+    """Thin proxy around a persistent SQLite connection so existing conn.close() calls keep the pool warm."""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def close(self):
+        # Keep the shared connection open and its page cache warm.
+        pass
+
+    def __enter__(self):
+        return self._conn.__enter__()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self._conn.__exit__(exc_type, exc_val, exc_tb)
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
 class Database:
-    """Thread-safe SQLite database with WAL mode, cloud/FUSE filesystem resilience, legacy JSON auto-migration, and backup support."""
+    """Thread-safe SQLite database with persistent WAL connection pooling, cloud/FUSE resilience, legacy JSON auto-migration, and online backup support."""
+
+    backend = "SQLite"
 
     def __init__(self, db_path: str = DB_PATH):
         self.target_db_path = db_path
         self.db_path = self._resolve_working_db_path(db_path)
         self._lock = threading.RLock()
+        self._conn: Optional[sqlite3.Connection] = None
         self._config_cache: Dict[str, str] = {}
         self._init_db()
         self._migrate_legacy_json()
@@ -85,6 +110,7 @@ class Database:
             conn = sqlite3.connect(requested_path, timeout=5.0)
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("CREATE TABLE IF NOT EXISTS _fs_probe (id INTEGER);")
+            conn.execute("DROP TABLE IF EXISTS _fs_probe;")
             conn.close()
             return requested_path
         except sqlite3.OperationalError:
@@ -93,7 +119,7 @@ class Database:
                     os.remove(requested_path)
             except Exception:
                 pass
-            fallback = os.path.join(tempfile.gettempdir(), "rof_bot_runtime.db")
+            fallback = os.path.join(tempfile.gettempdir(), "haven_bot_runtime.db")
             if os.path.exists(requested_path) and os.path.getsize(requested_path) > 0:
                 try:
                     shutil.copy2(requested_path, fallback)
@@ -108,15 +134,29 @@ class Database:
             except Exception:
                 pass
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-        conn.execute("PRAGMA temp_store=MEMORY;")
-        conn.execute("PRAGMA cache_size=-8000;")
-        return conn
+    def _get_raw_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            conn.execute("PRAGMA busy_timeout=5000;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA cache_size=-8000;")
+            self._conn = conn
+        return self._conn
+
+    def _connect(self) -> _PooledConn:
+        return _PooledConn(self._get_raw_conn())
+
+    def close(self):
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                finally:
+                    self._conn = None
 
     def _init_db(self):
         with self._lock:
@@ -188,6 +228,8 @@ class Database:
                             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                         );
                         CREATE INDEX IF NOT EXISTS idx_events_status_time ON events(status, start_time_utc);
+                        CREATE INDEX IF NOT EXISTS idx_events_reminder ON events(status, reminder_sent, announce_enabled, start_time_utc);
+                        CREATE INDEX IF NOT EXISTS idx_players_points ON players(points DESC);
 
                         CREATE TABLE IF NOT EXISTS rules (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,6 +306,10 @@ class Database:
                         conn.execute("ALTER TABLE events ADD COLUMN repeat_days INTEGER DEFAULT 0")
                     if "announce_enabled" not in ev_cols:
                         conn.execute("ALTER TABLE events ADD COLUMN announce_enabled INTEGER DEFAULT 1")
+                    # Remove deprecated runtime alliance-override keys so HAV / Haven is always authoritative
+                    conn.execute(
+                        "DELETE FROM server_config WHERE key IN ('alliance_short', 'alliance_name', 'alliance_footer')"
+                    )
             finally:
                 conn.close()
             self._mirror_if_needed()
@@ -1190,14 +1236,43 @@ class Database:
             finally:
                 conn.close()
 
+    def load_kv_json(self, doc_key: str, default: Any = None) -> Any:
+        path = os.path.join(DATA_DIR, f"{doc_key}.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+        return {} if default is None else default
+
+    def save_kv_json(self, doc_key: str, data: Any) -> None:
+        path = os.path.join(DATA_DIR, f"{doc_key}.json")
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+
     def create_backup(self) -> str:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        dest = os.path.join(BACKUP_DIR, f"rof_bot_backup_{stamp}.db")
+        dest = os.path.join(BACKUP_DIR, f"haven_bot_backup_{stamp}.db")
         with self._lock:
-            shutil.copy2(self.db_path, dest)
+            src_conn = self._get_raw_conn()
+            dst_conn = sqlite3.connect(dest)
+            try:
+                src_conn.backup(dst_conn)
+            finally:
+                dst_conn.close()
             self._mirror_if_needed()
         return dest
 
 
-db = Database()
+def _build_db():
+    if MONGO_URI:
+        from core.mongo_database import MongoDatabase
+        return MongoDatabase(MONGO_URI, db_name=MONGO_DB_NAME)
+    return Database()
+
+
+db = _build_db()

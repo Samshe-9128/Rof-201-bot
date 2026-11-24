@@ -8,13 +8,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import ROFColors
+from core.config import HAVColors
 from core.database import db
 from core.logger import log
 from core.owner_stealth import owner_stealth
 from core.permissions import ensure_session_player
 from core.rooms import room_manager
-from core.ui import GameResultView, get_alliance_short, rof_embed, safe_edit_or_send, safe_reply_error, send_private_bug_tip
+from core.ui import GameResultView, get_alliance_short, hav_embed, safe_edit_or_send, safe_reply_error, send_private_bug_tip
 
 SEQUENCE_PALETTE = [
     ("🔴", "Red"),
@@ -64,7 +64,7 @@ class SequenceMemoryView(discord.ui.View):
                 f"### {seq_display}\n\n"
                 f"⏳ *Memorize quickly! Hiding in a moment...*"
             )
-            color = ROFColors.WARNING
+            color = HAVColors.WARNING
         else:
             entered = "  ".join(self.player_input) if self.player_input else "*Click the buttons below in order...*"
             remaining = self.seq_length - len(self.player_input)
@@ -75,9 +75,9 @@ class SequenceMemoryView(discord.ui.View):
                 f"### {entered}\n\n"
                 f"Reproduce the exact sequence using the buttons below!"
             )
-            color = ROFColors.ARENA
+            color = HAVColors.ARENA
 
-        return rof_embed(
+        return hav_embed(
             title=f"🧠 {get_alliance_short()} MEMORY CHALLENGE",
             description=desc,
             color=color,
@@ -212,7 +212,7 @@ class SequenceMemoryView(discord.ui.View):
         except Exception as e:
             log.warning("DB record failed (Memory Challenge): %s", e)
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🧠 {get_alliance_short()} MEMORY CHALLENGE — GAME OVER",
             description=(
                 f"❌ **Incorrect sequence!**\n\n"
@@ -221,7 +221,7 @@ class SequenceMemoryView(discord.ui.View):
                 f"🏅 **Highest Level Reached:** `Level {highest_level}` (`{self.seq_length}` items)\n"
                 f"🎯 **Final Score:** `{self.score}` (`+{pts} Arcade Points`)"
             ),
-            color=ROFColors.SUCCESS if won else ROFColors.ERROR,
+            color=HAVColors.SUCCESS if won else HAVColors.ERROR,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(

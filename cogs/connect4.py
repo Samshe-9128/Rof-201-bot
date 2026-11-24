@@ -6,11 +6,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import ROFColors
+from core.config import HAVColors
 from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.owner_stealth import best_connect4_col, owner_stealth
-from core.ui import get_alliance_short, rof_embed, send_private_bug_tip
+from core.ui import get_alliance_short, hav_embed, send_private_bug_tip
 
 EMPTY_CELL = "⚫"
 P1_TOKEN = "🔴"
@@ -77,10 +77,10 @@ class Connect4View(discord.ui.View):
             f"{top_line}\n\n"
             f"{self._render_board()}"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"🔴 {get_alliance_short()} CONNECT 4",
             description=desc,
-            color=ROFColors.GOLD if self.finished else ROFColors.ARENA,
+            color=HAVColors.GOLD if self.finished else HAVColors.ARENA,
             footer_extra=f"Room {self.room.room_id}",
         )
 

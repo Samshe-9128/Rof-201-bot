@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = (os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or BASE_DIR).strip() or BASE_DIR
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception:
+    DATA_DIR = BASE_DIR
 
 
 def _safe_int(env_key: str, default: int = 0) -> int:
@@ -39,6 +44,9 @@ EVENT_CHANNEL_ID = _safe_int("EVENT_CHANNEL_ID", 0)
 WELCOME_CHANNEL_ID = _safe_int("WELCOME_CHANNEL_ID", 0)
 RULES_CHANNEL_ID = _safe_int("RULES_CHANNEL_ID", 0)
 DEFAULT_TZ_OFFSET = _safe_float("SERVER_TZ_OFFSET", -2.0)
+MONGO_URI = os.getenv("MONGO_URI", "").strip()
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "haven_bot").strip() or "haven_bot"
+AUTO_SYNC_COMMANDS = os.getenv("AUTO_SYNC_COMMANDS", "true").strip().lower() not in ("0", "false", "no")
 
 # Timezones: Game Time (default UTC-02:00) and India Time (Asia/Kolkata, UTC+05:30)
 GAME_TZ = timezone(timedelta(hours=DEFAULT_TZ_OFFSET))
@@ -94,39 +102,37 @@ def format_dual_timestamps(dt: datetime, offset_hours: float = None) -> dict:
     }
 
 
-# ROF Branding & Dark Gaming Theme
-BRAND_NAME = "ROF — Rise of Farkers"
-BRAND_SHORT = "ROF"
-BRAND_FOOTER = "ROF Gaming & Alliance System"
+# HAV (Haven) Branding & Dark Gaming Theme
+BRAND_NAME = "Haven"
+BRAND_SHORT = "HAV"
+BRAND_FOOTER = "HAV Gaming & Alliance System"
 
-class ROFColors:
+
+class HAVColors:
     PRIMARY = 0x2B2D31      # Sleek dark gaming slate
     ARENA = 0x5865F2        # Vibrant cyber blurple
-    ACCENT = 0xE63946       # ROF crimson
+    ACCENT = 0xE63946       # HAV crimson
     SUCCESS = 0x2ECC71      # Emerald win
     WARNING = 0xF39C12      # Amber alert / wait
     ERROR = 0xED4245        # Clean danger red
     GOLD = 0xF1C40F         # Leaderboard / championship gold
     INFO = 0x3498DB         # Information blue
 
+
 RANKS = [
     (0, "Bronze", "🥉"),
     (100, "Silver", "🥈"),
     (250, "Gold", "🥇"),
     (500, "Diamond", "💎"),
-    (1000, "ROF Legend", "👑"),
+    (1000, "HAV Legend", "👑"),
 ]
 
+
 def get_rank(points: int, alliance_short: str = None):
-    if alliance_short is None:
-        try:
-            from core.database import db
-            alliance_short = (db.get_config("alliance_short", BRAND_SHORT) or BRAND_SHORT).strip()
-        except Exception:
-            alliance_short = BRAND_SHORT
+    short = (alliance_short or BRAND_SHORT).strip() or BRAND_SHORT
     current = (RANKS[0][1], RANKS[0][2])
     for threshold, name, emoji in RANKS:
         if points >= threshold:
-            resolved = f"{alliance_short} Legend" if name == "ROF Legend" else name
+            resolved = f"{short} Legend" if name == "HAV Legend" else name
             current = (resolved, emoji)
     return current

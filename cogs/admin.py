@@ -5,10 +5,10 @@ from discord import app_commands
 from discord.ext import commands
 from typing import Optional
 
-from core.config import DEFAULT_TZ_OFFSET, OWNER_ID, ROFColors
+from core.config import DEFAULT_TZ_OFFSET, OWNER_ID, HAVColors
 from core.database import db
 from core.permissions import ensure_admin, ensure_owner
-from core.ui import get_alliance_short, rof_embed
+from core.ui import get_alliance_short, hav_embed
 
 
 class Admin(commands.Cog):
@@ -74,7 +74,7 @@ class Admin(commands.Cog):
         w_val = db.get_config("wordle_open_to_all", "true")
         wipe_val = db.get_config("wipe_stats_on_leave", "false")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"⚙️ {get_alliance_short()} ADMIN SETTINGS",
             description=(
                 f"**Game Timezone Offset:** `UTC{float(tz_val):+g}` (India Time: `Asia/Kolkata`)\n"
@@ -82,7 +82,7 @@ class Admin(commands.Cog):
                 f"**Wordle Open to All Members:** `{w_val}`\n"
                 f"**Wipe Player Stats on Leave:** `{wipe_val}`"
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         if changes:
             embed.add_field(name="✅ Applied Changes", value="\n".join(f"• {c}" for c in changes), inline=False)
@@ -141,7 +141,7 @@ class Admin(commands.Cog):
         except Exception:
             ai_cids = []
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"📡 {get_alliance_short()} CONFIGURED CHANNELS",
             description=(
                 f"**Event Announcements & Reminders:** {f'<#{ev_cid}>' if ev_cid else '*Not set*'}\n"
@@ -149,7 +149,7 @@ class Admin(commands.Cog):
                 f"**Rules Reference Channel:** {f'<#{rul_cid}>' if rul_cid else '*Uses /rules*'}\n"
                 f"**AI Assistant Channels:** {', '.join(f'<#{c}>' for c in ai_cids) if ai_cids else '*DMs & @Mentions only*'}"
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         if updates:
             embed.add_field(name="✅ Updated", value="\n".join(f"• {u}" for u in updates), inline=False)
@@ -272,10 +272,10 @@ class Admin(commands.Cog):
         if len(desc_text) > 3900:
             desc_text = desc_text[:3897] + "..."
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🔐 {get_alliance_short()} SECURITY & PERMISSIONS CENTER",
             description=desc_text,
-            color=ROFColors.GOLD,
+            color=HAVColors.GOLD,
         )
         embed.add_field(name="📋 Recent Administrative Audit Logs", value="\n".join(log_lines)[:1024], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)

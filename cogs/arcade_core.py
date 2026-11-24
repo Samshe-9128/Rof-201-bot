@@ -1,6 +1,4 @@
 # cogs/arcade_core.py
-import json
-import os
 import traceback
 from typing import Optional
 
@@ -8,10 +6,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import RANKS, ROFColors, get_rank
+from core.config import RANKS, HAVColors, get_rank
 from core.database import db
 from core.permissions import ensure_session_player
-from core.ui import get_alliance_short, rof_embed
+from core.ui import get_alliance_short, hav_embed
 
 
 class LeaderboardFilterView(discord.ui.View):
@@ -130,10 +128,10 @@ class ProfileView(discord.ui.View):
                 f"• {timestamp} — **{r.get('game_name', '?')}** ({icon}) · "
                 f"Score: `{r.get('score', 0)}` (`+{r.get('points_earned', 0)} pts`){react_note}"
             )
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"📜 {self.target.display_name} — RECENT MATCH HISTORY",
             description="\n".join(lines) or "*No matches to display.*",
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -220,10 +218,10 @@ class ArcadeCore(commands.Cog):
             f"**Favourite Game:** `{favourite_game}`\n"
             f"**Best Reaction:** `{react_str}`"
         )
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🛡️ {short} PLAYER PROFILE — {target.display_name.upper()}",
             description=desc,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             thumbnail_url=(
                 target.display_avatar.url
                 if hasattr(target, "display_avatar")
@@ -267,7 +265,7 @@ class ArcadeCore(commands.Cog):
             except (TypeError, IndexError):
                 continue
             if points < threshold:
-                next_rank = (threshold, f"{short} Legend" if name == "ROF Legend" else name)
+                next_rank = (threshold, f"{short} Legend" if name == "HAV Legend" else name)
                 break
 
         if next_rank:
@@ -357,13 +355,13 @@ class ArcadeCore(commands.Cog):
             title = f"🏆 {short} LEADERBOARD — ALL-TIME OVERALL"
 
         if not rows:
-            return rof_embed(
+            return hav_embed(
                 title=title,
                 description=(
                     "No recorded matches for this category yet! "
                     "Use `/games` to claim the #1 spot."
                 ),
-                color=ROFColors.GOLD,
+                color=HAVColors.GOLD,
             )
 
         lines = []
@@ -395,10 +393,10 @@ class ArcadeCore(commands.Cog):
                     f"({rank_name}) · `{wins}W/{gp}G`"
                 )
 
-        return rof_embed(
+        return hav_embed(
             title=title,
             description="\n".join(lines),
-            color=ROFColors.GOLD,
+            color=HAVColors.GOLD,
         )
 
     async def send_leaderboard_interactive(
@@ -439,6 +437,7 @@ class ArcadeCore(commands.Cog):
         name="profile",
         description="View your Player Profile, gaming statistics, and match history",
     )
+    @app_commands.checks.cooldown(1, 3.0)
     async def profile_cmd(
         self,
         interaction: discord.Interaction,
@@ -451,6 +450,7 @@ class ArcadeCore(commands.Cog):
         name="leaderboard",
         description="View the Gaming Leaderboard (Overall, Weekly, and Per-Game)",
     )
+    @app_commands.checks.cooldown(1, 3.0)
     @app_commands.describe(scope="Choose Overall All-Time or Weekly")
     @app_commands.choices(
         scope=[

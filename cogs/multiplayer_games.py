@@ -5,7 +5,7 @@ import time
 import traceback
 import discord
 from discord.ext import commands
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from cogs.singleplayer_games import (
     EMOJI_PUZZLES,
@@ -17,12 +17,12 @@ from cogs.singleplayer_games import (
     _shuffle_word,
     generate_math_problem,
 )
-from core.config import ROFColors
+from core.config import HAVColors
 from core.database import db
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
-from core.ui import BugReportModal, get_alliance_short, safe_reply_error, rof_embed
+from core.ui import BugReportModal, get_alliance_short, safe_reply_error, hav_embed
 
 
 # ==============================================================================
@@ -165,10 +165,10 @@ class MultiRoundRaceView(discord.ui.View):
             f"**Round:** `{self.current_round} / {self.total_rounds}` | {timer_line}\n\n"
             f"{self.prompt_display}{chat_hint}"
         )
-        embed = rof_embed(
+        embed = hav_embed(
             title=titles.get(self.mode, f"{get_alliance_short()} MULTIPLAYER RACE"),
             description=desc,
-            color=ROFColors.ARENA if not self.finished else ROFColors.GOLD,
+            color=HAVColors.ARENA if not self.finished else HAVColors.GOLD,
             footer_extra=f"Room {self.room.room_id}",
         )
 
@@ -523,10 +523,10 @@ class TriviaBattleView(discord.ui.View):
             f"### {q_item['q']}\n\n"
             f"🔒 **Locked In ({len(self.submissions)}/{len(self.room.players)}):** {ans_status}"
         )
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"❓ {get_alliance_short()} TRIVIA BATTLE",
             description=desc,
-            color=ROFColors.ARENA if not self.finished else ROFColors.GOLD,
+            color=HAVColors.ARENA if not self.finished else HAVColors.GOLD,
             footer_extra=f"Room {self.room.room_id}",
         )
 
@@ -773,10 +773,10 @@ class MultiplayerRPSView(discord.ui.View):
             f"• {self.p1.mention}: {p1_locked}\n"
             f"• {self.p2.mention}: {p2_locked}"
         )
-        return rof_embed(
+        return hav_embed(
             title=f"✂️ {get_alliance_short()} MULTIPLAYER ROCK PAPER SCISSORS",
             description=desc,
-            color=ROFColors.SUCCESS if self.finished else ROFColors.ARENA,
+            color=HAVColors.SUCCESS if self.finished else HAVColors.ARENA,
             footer_extra=f"Room {self.room.room_id}",
         )
 

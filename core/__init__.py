@@ -1,2 +1,2 @@
 # core/__init__.py
-"""ROF Bot Core Infrastructure Package."""
+"""HAV Bot Core Infrastructure Package."""

@@ -1,6 +1,6 @@
 # core/chat_input.py
 """
-Central chat-message input router for ROF Discord Bot games.
+Central chat-message input router for HAV Discord Bot games.
 
 Lets players simply type their guesses/answers as normal Discord messages
 (in both server channels and DMs) — just like popular Discord game bots —

@@ -5,7 +5,6 @@ import json
 import os
 import random
 import time
-import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
@@ -16,7 +15,7 @@ from dotenv import load_dotenv
 
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
-from core.config import BASE_DIR, OWNER_ID, ROFColors
+from core.config import BASE_DIR, OWNER_ID, HAVColors
 from core.database import db
 from core.ui import BugReportModal, get_alliance_short, safe_defer, safe_edit_or_send, safe_reply_error
 
@@ -50,8 +49,10 @@ def load_json(path, default):
 
 
 def save_json(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, path)
 
 
 def load_word_list(path):
@@ -183,9 +184,9 @@ class Wordle(commands.Cog):
         self.answers = load_word_list(ANSWERS_FILE)
         # Valid list kept only for optional friendlier messaging / suggestions.
         self.valid_words = set(self.answers) | set(load_word_list(VALID_FILE))
-        self.stats = load_json(STATS_FILE, {})
-        self.games = load_json(GAMES_FILE, {})
-        self.daily = load_json(DAILY_FILE, {})
+        self.stats = db.load_kv_json('wordle_stats', {})
+        self.games = db.load_kv_json('wordle_games', {})
+        self.daily = db.load_kv_json('wordle_daily', {})
         self.last_guess: Dict[int, float] = {}
         # Active board messages keyed by (channel_id, user_id) -> {"message": Message, "mode": str, "view": View}
         self.active_boards: Dict[tuple, dict] = {}
@@ -268,7 +269,7 @@ class Wordle(commands.Cog):
             if not self.answers:
                 return None
             self.daily[today] = random.choice(self.answers)
-            save_json(DAILY_FILE, self.daily)
+            db.save_kv_json('wordle_daily', self.daily)
         return self.daily[today]
 
     def _get_game(self, user_id, mode):
@@ -277,7 +278,7 @@ class Wordle(commands.Cog):
     def _save_game(self, user_id, mode, game):
         uid = str(user_id)
         self.games.setdefault(uid, {})[mode] = game
-        save_json(GAMES_FILE, self.games)
+        db.save_kv_json('wordle_games', self.games)
 
     def _get_stats(self, user_id):
         uid = str(user_id)
@@ -295,7 +296,7 @@ class Wordle(commands.Cog):
         return self.stats[uid]
 
     def _save_stats(self):
-        save_json(STATS_FILE, self.stats)
+        db.save_kv_json('wordle_stats', self.stats)
 
     # ---------- rendering ----------
 
@@ -334,7 +335,7 @@ class Wordle(commands.Cog):
     def _build_embed(self, mode, game, user_id=None, player_name: str = ""):
         short = get_alliance_short()
         title = f"🟩 {short} Wordle — Daily" if mode == 'daily' else f"🟩 {short} Wordle — Practice"
-        embed = discord.Embed(title=title, color=ROFColors.ARENA)
+        embed = discord.Embed(title=title, color=HAVColors.ARENA)
         board_str = self._render_board(game['guesses'], game['answer'])
         if not game.get('finished'):
             prompt_line = "\n\n💬 **Type any 5-letter word in chat to guess!** *(Type `quit` to give up)*"
@@ -355,14 +356,14 @@ class Wordle(commands.Cog):
 
         if game.get('finished'):
             if game.get('won'):
-                embed.color = ROFColors.SUCCESS
+                embed.color = HAVColors.SUCCESS
                 embed.add_field(
                     name="Result",
                     value=f"🎉 **WIN! Correct in {len(game['guesses'])} guesses!** (Word: **{game['answer'].upper()}**)",
                     inline=False,
                 )
             else:
-                embed.color = ROFColors.ERROR
+                embed.color = HAVColors.ERROR
                 embed.add_field(
                     name="Result",
                     value=f"❌ **GAME OVER.** The word was **{game['answer'].upper()}**",
@@ -445,7 +446,7 @@ class Wordle(commands.Cog):
                         f"🏆 Best: **{stats['max_streak']}**\n\n"
                         f"⏳ Next word in **{self._format_countdown()}**"
                     ),
-                    color=ROFColors.WARNING,
+                    color=HAVColors.WARNING,
                 )
                 view = ShareResultView(self, game, mode, stats, user_id=user_id)
                 await safe_edit_or_send(interaction, embed=embed, view=view, ephemeral=False)
@@ -688,7 +689,7 @@ class Wordle(commands.Cog):
         pts = max(15, 60 - (attempts - 1) * 8) if won else 5
         score = (7 - attempts) * 20 if won else 0
 
-        # Record into unified ROF database
+        # Record into unified HAV database
         try:
             db.record_game_result(
                 user_id=user_id,
@@ -743,7 +744,7 @@ class Wordle(commands.Cog):
         stats = self._get_stats(interaction.user.id)
         embed = discord.Embed(
             title=f"📊 {interaction.user.display_name}'s Wordle Stats",
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         played, wins = stats['games_played'], stats['wins']
         win_rate = round(wins / played * 100) if played else 0

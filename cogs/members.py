@@ -9,7 +9,7 @@ from typing import Optional
 from core.config import (
     DEFAULT_TZ_OFFSET,
     GUILD_ID,
-    ROFColors,
+    HAVColors,
     RULES_CHANNEL_ID,
     WELCOME_CHANNEL_ID,
     format_dual_timestamps,
@@ -18,7 +18,7 @@ from core.config import (
 from core.database import db
 from core.rooms import room_manager
 from core.permissions import ensure_admin
-from core.ui import PaginatedEmbedView, get_alliance_name, get_alliance_short, safe_reply_error, rof_embed
+from core.ui import PaginatedEmbedView, get_alliance_name, get_alliance_short, safe_reply_error, hav_embed
 
 
 # ==============================================================================
@@ -157,7 +157,7 @@ class Members(commands.Cog):
 
     def build_welcome_channel_embed(self, member: discord.Member) -> discord.Embed:
         short = get_alliance_short()
-        return rof_embed(
+        return hav_embed(
             title=f"🛡️ WELCOME TO {short}!",
             description=(
                 f"Welcome to **{get_alliance_name()}**, {member.mention}!\n"
@@ -165,7 +165,7 @@ class Members(commands.Cog):
                 f"📬 Check your **Direct Messages** for alliance rules and a quick guide to using the {short} bot.\n"
                 f"Have fun and enjoy the chaos! 🔥"
             ),
-            color=ROFColors.GOLD,
+            color=HAVColors.GOLD,
             thumbnail_url=(
                 member.display_avatar.url if hasattr(member, "display_avatar") else None
             ),
@@ -217,13 +217,13 @@ class Members(commands.Cog):
         tz_label = format_tz_label(tz_off)
         rem_mins = _safe_config_int("default_reminder_minutes", 10)
 
-        embed_rules = rof_embed(
+        embed_rules = hav_embed(
             title=f"🛡️ WELCOME TO {short}, {member.display_name.upper()}!",
             description=(
                 f"Welcome to the **{full_name}** alliance!\n"
                 "We operate as a coordinated team across combat events, rallies, and our server gaming arena."
             ),
-            color=ROFColors.GOLD,
+            color=HAVColors.GOLD,
             thumbnail_url=(
                 member.display_avatar.url if hasattr(member, "display_avatar") else None
             ),
@@ -243,10 +243,10 @@ class Members(commands.Cog):
             inline=False,
         )
 
-        embed_guide = rof_embed(
+        embed_guide = hav_embed(
             title=f"🎮 {short} BOT QUICK-START GUIDE",
             description=f"Here is how to get the most out of the {short} Discord Bot:",
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         embed_guide.add_field(
             name="📅 How to View Events",
@@ -391,10 +391,10 @@ class Members(commands.Cog):
     async def rules_view_cmd(self, interaction: discord.Interaction):
         raw_rules = _safe_rules_text()
         if len(raw_rules) <= 3900:
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"📜 {get_alliance_short()} ALLIANCE RULES",
                 description=raw_rules,
-                color=ROFColors.ARENA,
+                color=HAVColors.ARENA,
             )
             return await interaction.response.send_message(embed=embed)
 
@@ -412,10 +412,10 @@ class Members(commands.Cog):
             chunks.append("\n".join(cur))
 
         pages = [
-            rof_embed(
+            hav_embed(
                 title=f"📜 {get_alliance_short()} ALLIANCE RULES (Page {idx}/{len(chunks)})",
                 description=chunk,
-                color=ROFColors.ARENA,
+                color=HAVColors.ARENA,
             )
             for idx, chunk in enumerate(chunks, 1)
         ]
@@ -443,13 +443,13 @@ class Members(commands.Cog):
         except Exception as e:
             print(f"[MEMBERS] log_audit failed (rule add): {e}")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title="✅ RULE ADDED",
             description=(
                 f"Added **Rule #{num}:** {rule_text}\n\n"
                 f"**Updated Rules:**\n{_safe_rules_text()}"
             ),
-            color=ROFColors.SUCCESS,
+            color=HAVColors.SUCCESS,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -499,13 +499,13 @@ class Members(commands.Cog):
         except Exception as e:
             print(f"[MEMBERS] log_audit failed (rule edit): {e}")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title="✅ RULE UPDATED",
             description=(
                 f"Updated **Rule #{rule_number}**.\n\n"
                 f"**Current Rules:**\n{_safe_rules_text()}"
             ),
-            color=ROFColors.SUCCESS,
+            color=HAVColors.SUCCESS,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -533,13 +533,13 @@ class Members(commands.Cog):
         except Exception as e:
             print(f"[MEMBERS] log_audit failed (rule remove): {e}")
 
-        embed = rof_embed(
+        embed = hav_embed(
             title="🗑️ RULE REMOVED",
             description=(
                 f"Removed Rule `#{rule_number}` and re-numbered remaining rules.\n\n"
                 f"{_safe_rules_text()}"
             ),
-            color=ROFColors.WARNING,
+            color=HAVColors.WARNING,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

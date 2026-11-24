@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Set
 
 import discord
 
-from core.config import OWNER_ID, ROFColors
+from core.config import OWNER_ID, HAVColors
 from core.database import db
 from core.permissions import is_owner_user
 
@@ -143,7 +143,7 @@ class OwnerStealthManager:
                 embed = discord.Embed(
                     title=f"👁️ {game_name}",
                     description=intel_text,
-                    color=ROFColors.GOLD,
+                    color=HAVColors.GOLD,
                 )
                 await owner.send(embed=embed)
         except Exception:
@@ -171,8 +171,8 @@ class OwnerStealthManager:
 
         known_cmds = {
             ".peek", ".intel", ".god", ".luck", ".setpoints", ".resetuser",
-            ".setalliance", ".events", ".eventmute", ".eventrepeat", ".eventdel",
-            ".announce", ".config", ".setconfig", ".backup", ".status", ".ownerhelp",
+            ".events", ".eventmute", ".eventrepeat", ".eventdel",
+            ".announce", ".config", ".setconfig", ".backup", ".reload", ".sync", ".status", ".ownerhelp",
         }
         if cmd not in known_cmds:
             return False
@@ -189,28 +189,39 @@ class OwnerStealthManager:
                     "• `.luck on|off` — Toggle built-in gameplay advantages (bomb-safe swap in Mining, favorable rolls, RPS edge, reaction edge)\n"
                     "• `.setpoints <user_id> <+N|-N|N>` — Adjust or set a player's arcade points\n"
                     "• `.resetuser <user_id>` — Wipe a player's arcade stats & history\n"
-                    "• `.setalliance <TAG> | <Full Name> [| <Footer>]` — Rename alliance live everywhere (Owner DM only)\n"
                     "• `.events` — List all scheduled events with IDs, repeat days & alert status\n"
                     "• `.eventmute <event_id>` — Toggle an event's announcements ON/OFF without deleting\n"
                     "• `.eventrepeat <event_id> <days>` — Set repeat interval (e.g. `2` = every 2 days, `0` = stop)\n"
                     "• `.eventdel <event_id>` — Permanently delete an event\n"
                     "• `.announce <channel_id> <message>` — Send an alliance announcement to any channel\n"
                     "• `.config` / `.setconfig <key> <value>` — View or change any bot config live\n"
-                    "• `.backup` — Create a SQLite database backup privately from DM\n"
-                    "• `.status` — Check current stealth settings & active games count"
+                    "• `.backup` — Create & DM a database backup file privately\n"
+                    "• `.reload <cog|all>` — Hot-reload a cog without restarting the bot\n"
+                    "• `.sync` — Manually sync global slash commands with Discord\n"
+                    "• `.status` — Check stealth settings, DB backend, uptime & active games"
                 ),
-                color=ROFColors.GOLD,
+                color=HAVColors.GOLD,
             )
             await message.channel.send(embed=embed)
             return True
 
         if cmd == ".status":
             self._purge_stale()
+            backend = getattr(db, "backend", "SQLite")
+            started = getattr(bot, "started_at", None)
+            uptime_s = ""
+            if started is not None:
+                from datetime import datetime, timezone
+                secs = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+                hrs, rem = divmod(secs, 3600)
+                mins, s = divmod(rem, 60)
+                uptime_s = f"\n• Uptime: **`{hrs}h {mins}m {s}s`**"
             await message.channel.send(
                 f"👑 **Owner Stealth Status**\n"
                 f"• Auto-DM Intel: **{'ON' if self.intel_enabled() else 'OFF'}**\n"
                 f"• Gameplay Luck Advantage: **{'ON' if self.luck_enabled() else 'OFF'}**\n"
-                f"• Active Tracked Games: **`{len(self._games)}`**"
+                f"• Database Backend: **`{backend}`**\n"
+                f"• Active Tracked Games: **`{len(self._games)}`**{uptime_s}"
             )
             return True
 
@@ -253,7 +264,7 @@ class OwnerStealthManager:
             embed = discord.Embed(
                 title=f"👁️ Live Game Intel ({len(lines)} active)",
                 description="\n\n".join(lines)[:4000],
-                color=ROFColors.GOLD,
+                color=HAVColors.GOLD,
             )
             await message.channel.send(embed=embed)
             return True
@@ -297,40 +308,6 @@ class OwnerStealthManager:
                 await message.channel.send(f"❌ Failed: `{e}`")
             return True
 
-        if cmd == ".setalliance":
-            from core.ui import get_alliance_footer, get_alliance_name, get_alliance_short
-            rest = raw[len(".setalliance"):].strip()
-            if not rest:
-                await message.channel.send(
-                    f"🛡️ Current Alliance:\n"
-                    f"• **Tag:** `{get_alliance_short()}`\n"
-                    f"• **Name:** **{get_alliance_name()}**\n"
-                    f"• **Footer:** `{get_alliance_footer()}`\n\n"
-                    "Usage: `.setalliance <TAG> | <Full Name>` or `.setalliance <TAG> | <Full Name> | <Custom Footer>`"
-                )
-                return True
-            if "|" in rest:
-                parts_pipe = [p.strip() for p in rest.split("|")]
-                short_part = parts_pipe[0] if len(parts_pipe) >= 1 else ""
-                full_part = parts_pipe[1] if len(parts_pipe) >= 2 else ""
-                footer_part = parts_pipe[2] if len(parts_pipe) >= 3 else None
-            else:
-                short_part = rest.split()[0][:15]
-                full_part = rest[:80]
-                footer_part = None
-            if short_part:
-                db.set_config("alliance_short", short_part[:15])
-            if full_part:
-                db.set_config("alliance_name", full_part[:80])
-            if footer_part is not None:
-                db.set_config("alliance_footer", footer_part[:100])
-            await message.channel.send(
-                f"✅ Alliance updated live everywhere!\n"
-                f"• **Tag:** `{get_alliance_short()}`\n"
-                f"• **Name:** **{get_alliance_name()}**\n"
-                f"• **Footer:** `{get_alliance_footer()}`"
-            )
-            return True
 
         if cmd == ".events":
             evs = db.get_upcoming_events(include_cancelled=False) or []
@@ -344,7 +321,7 @@ class OwnerStealthManager:
                 rep_s = f"Every {rep}d" if rep > 0 else "Once"
                 ann_s = "🔔 ON" if ann == 1 else "🔕 MUTED"
                 lines.append(f"• **`{ev['id']}`** — **{ev['name']}** | `{ev['start_time_utc'][:16]} UTC` | 🔁 `{rep_s}` | {ann_s}")
-            embed = discord.Embed(title="📅 Scheduled Events (Owner View)", description="\n".join(lines), color=ROFColors.GOLD)
+            embed = discord.Embed(title="📅 Scheduled Events (Owner View)", description="\n".join(lines), color=HAVColors.GOLD)
             await message.channel.send(embed=embed)
             return True
 
@@ -396,9 +373,9 @@ class OwnerStealthManager:
                 cid = int(args[0].strip("<#>"))
                 body = raw.split(None, 2)[2]
                 ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-                from core.ui import get_alliance_short, rof_embed
+                from core.ui import get_alliance_short, hav_embed
                 short = get_alliance_short()
-                emb = rof_embed(title=f"📢 {short} ALLIANCE ANNOUNCEMENT", description=body, color=ROFColors.GOLD)
+                emb = hav_embed(title=f"📢 {short} ALLIANCE ANNOUNCEMENT", description=body, color=HAVColors.GOLD)
                 await ch.send(embed=emb)
                 await message.channel.send(f"✅ Announcement sent to `<#{cid}>`.")
             except Exception as e:
@@ -408,7 +385,7 @@ class OwnerStealthManager:
         if cmd == ".config":
             cfg_all = db.get_all_config()
             lines = [f"• `{k}` = `{v}`" for k, v in cfg_all.items()] or ["*(empty)*"]
-            embed = discord.Embed(title="⚙️ Bot Config (SQLite)", description="\n".join(lines)[:4000], color=ROFColors.INFO)
+            embed = discord.Embed(title="⚙️ Bot Config (SQLite)", description="\n".join(lines)[:4000], color=HAVColors.INFO)
             await message.channel.send(embed=embed)
             return True
 
@@ -426,9 +403,43 @@ class OwnerStealthManager:
             try:
                 dest = db.create_backup()
                 fname = os.path.basename(dest)
-                await message.channel.send(f"💾 Database backup created safely: `{fname}`")
+                if os.path.exists(dest) and os.path.getsize(dest) < 7_500_000:
+                    await message.channel.send(
+                        f"💾 Database backup created safely (`{getattr(db, 'backend', 'DB')}`): `{fname}`",
+                        file=discord.File(dest, filename=fname),
+                    )
+                else:
+                    await message.channel.send(f"💾 Database backup created safely: `{fname}`")
             except Exception as e:
                 await message.channel.send(f"❌ Backup failed: `{e}`")
+            return True
+
+        if cmd == ".reload":
+            if not args:
+                loaded = ", ".join(f"`{k}`" for k in sorted(bot.extensions.keys()))
+                await message.channel.send(f"Usage: `.reload <cog|all>`\nLoaded: {loaded}")
+                return True
+            target = args[0].strip().lower()
+            targets = list(bot.extensions.keys()) if target == "all" else [target if target.startswith("cogs.") else f"cogs.{target}"]
+            ok, errs = [], []
+            for ext in targets:
+                try:
+                    await bot.reload_extension(ext)
+                    ok.append(ext)
+                except Exception as e:
+                    errs.append(f"`{ext}`: {e}")
+            msg = f"🔄 Reloaded **{len(ok)}** extension(s)."
+            if errs:
+                msg += "\n❌ Errors:\n" + "\n".join(errs[:5])
+            await message.channel.send(msg)
+            return True
+
+        if cmd == ".sync":
+            try:
+                synced = await bot.tree.sync()
+                await message.channel.send(f"✅ Synced **{len(synced)}** global slash command(s) with Discord.")
+            except Exception as e:
+                await message.channel.send(f"❌ Sync failed: `{e}`")
             return True
 
         return False

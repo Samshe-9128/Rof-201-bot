@@ -1,20 +1,19 @@
 # cogs/fast_games.py
 import asyncio
 import random
-import traceback
 from typing import Dict, List, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import ROFColors
+from core.config import HAVColors
 from core.database import db
 from core.logger import log
 from core.permissions import ensure_session_player
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.owner_stealth import best_tictactoe_move, format_treasure_map, owner_stealth
-from core.ui import GameResultView, get_alliance_short, rof_embed, safe_defer, safe_edit_or_send, safe_reply_error, send_private_bug_tip
+from core.ui import GameResultView, get_alliance_short, hav_embed, safe_defer, safe_edit_or_send, safe_reply_error, send_private_bug_tip
 
 
 def _disable_all(view: discord.ui.View) -> None:
@@ -70,8 +69,8 @@ class HigherLowerView(discord.ui.View):
     def _sync_buttons(self):
         self.cashout_btn.disabled = self.streak == 0 or self.finished
 
-    def build_embed(self, color: int = ROFColors.ARENA) -> discord.Embed:
-        return rof_embed(
+    def build_embed(self, color: int = HAVColors.ARENA) -> discord.Embed:
+        return hav_embed(
             title=f"⬆️⬇️ {get_alliance_short()} HIGHER OR LOWER",
             description=(
                 f"**Current Number:** `# {self.current}`\n"
@@ -113,7 +112,7 @@ class HigherLowerView(discord.ui.View):
             )
             self.next_num = self._roll_next(self.current)
             self._sync_buttons()
-            await safe_edit_or_send(interaction, embed=self.build_embed(ROFColors.SUCCESS), view=self, fallback_message=self.message)
+            await safe_edit_or_send(interaction, embed=self.build_embed(HAVColors.SUCCESS), view=self, fallback_message=self.message)
             owner_stealth.notify_owner_async(
                 self.cog.bot,
                 {self.user.id},
@@ -143,14 +142,14 @@ class HigherLowerView(discord.ui.View):
             except Exception as e:
                 log.warning("DB record failed (Higher or Lower): %s", e)
 
-            embed = rof_embed(
+            embed = hav_embed(
                 title="⬆️⬇️ HIGHER OR LOWER — BUST!",
                 description=(
                     f"❌ `{prev}` → **`{nxt}`**! Wrong call!\n\n"
                     f"🔥 **Final Streak:** `{self.streak}`\n"
                     f"🎯 **Final Score:** `{self.score}` (`+{pts} Arcade Points`)"
                 ),
-                color=ROFColors.ERROR,
+                color=HAVColors.ERROR,
                 footer_extra=f"Player: {self.user.display_name}",
             )
             res_view = GameResultView(self.user, "Higher or Lower", self.cog.start_higher_lower)
@@ -192,14 +191,14 @@ class HigherLowerView(discord.ui.View):
         except Exception as e:
             log.warning("DB record failed (Higher or Lower cashout): %s", e)
 
-        embed = rof_embed(
+        embed = hav_embed(
             title="💰 HIGHER OR LOWER — CASHED OUT!",
             description=(
                 f"🏆 Smart move! You locked in your streak!\n\n"
                 f"🔥 **Final Streak:** `{self.streak}`\n"
                 f"🎯 **Final Score:** `{self.score}` (`+{pts} Arcade Points`)"
             ),
-            color=ROFColors.GOLD,
+            color=HAVColors.GOLD,
             footer_extra=f"Player: {self.user.display_name}",
         )
         res_view = GameResultView(self.user, "Higher or Lower", self.cog.start_higher_lower)
@@ -216,10 +215,10 @@ class HigherLowerView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(
-                    embed=rof_embed(
+                    embed=hav_embed(
                         title="⏰ HIGHER OR LOWER — TIMED OUT",
                         description="Session expired due to inactivity.",
-                        color=ROFColors.WARNING,
+                        color=HAVColors.WARNING,
                     ),
                     view=self,
                 )
@@ -266,13 +265,13 @@ class TreasureHuntView(discord.ui.View):
         self.add_item(self.cashout_btn)
 
     def build_embed(self, note: str = "Pick a tile! **7 Gems 💎** & **2 Bombs 💣** are hidden.") -> discord.Embed:
-        return rof_embed(
+        return hav_embed(
             title=f"💎 {get_alliance_short()} TREASURE HUNT",
             description=(
                 f"**Gems Found:** `{len(self.opened)} / 7` | 🎯 **Current Pot:** `{self.score} pts`\n\n"
                 f"{note}"
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Player: {self.user.display_name}",
         )
 
@@ -347,13 +346,13 @@ class TreasureHuntView(discord.ui.View):
                 except Exception as e:
                     log.warning("DB record failed (Treasure Hunt bomb): %s", e)
 
-                embed = rof_embed(
+                embed = hav_embed(
                     title="💥 TREASURE HUNT — BOOM!",
                     description=(
                         f"You hit a hidden **💣 Bomb** after finding `{len(self.opened)}` gem(s)!\n"
                         f"🏅 **Consolation:** `+{pts} Arcade Points`"
                     ),
-                    color=ROFColors.ERROR,
+                    color=HAVColors.ERROR,
                     footer_extra=f"Player: {self.user.display_name}",
                 )
                 room_manager.unregister_solo_view(self.user.id, "treasure", self)
@@ -390,13 +389,13 @@ class TreasureHuntView(discord.ui.View):
                 except Exception as e:
                     log.warning("DB record failed (Treasure Hunt clear): %s", e)
 
-                embed = rof_embed(
+                embed = hav_embed(
                     title="👑 TREASURE HUNT — FULL CLEAR!",
                     description=(
                         f"Unbelievable! You found all **7/7 Gems 💎** without hitting a bomb!\n"
                         f"🎯 **Final Score:** `{pts} pts` (`+30 Clear Bonus` included!)"
                     ),
-                    color=ROFColors.GOLD,
+                    color=HAVColors.GOLD,
                     footer_extra=f"Player: {self.user.display_name}",
                 )
                 room_manager.unregister_solo_view(self.user.id, "treasure", self)
@@ -435,13 +434,13 @@ class TreasureHuntView(discord.ui.View):
         except Exception as e:
             log.warning("DB record failed (Treasure Hunt cashout): %s", e)
 
-        embed = rof_embed(
+        embed = hav_embed(
             title="💰 TREASURE HUNT — CASHED OUT!",
             description=(
                 f"You escaped safely with **{len(self.opened)}/7 Gems 💎**!\n"
                 f"🎯 **Final Score:** `{pts} pts` (`+{pts} Arcade Points`)"
             ),
-            color=ROFColors.SUCCESS,
+            color=HAVColors.SUCCESS,
             footer_extra=f"Player: {self.user.display_name}",
         )
         room_manager.unregister_solo_view(self.user.id, "treasure", self)
@@ -458,10 +457,10 @@ class TreasureHuntView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(
-                    embed=rof_embed(
+                    embed=hav_embed(
                         title="⏰ TREASURE HUNT — TIMED OUT",
                         description="Session expired due to inactivity.",
-                        color=ROFColors.WARNING,
+                        color=HAVColors.WARNING,
                     ),
                     view=self,
                 )
@@ -516,10 +515,10 @@ class TicTacToeView(discord.ui.View):
         active = self.p1 if self.turn == 1 else self.p2
         mark = "❌" if self.turn == 1 else "⭕"
         top = status_text or f"**Current Turn:** {mark} {active.mention}"
-        return rof_embed(
+        return hav_embed(
             title=f"❌⭕ {get_alliance_short()} TIC-TAC-TOE",
             description=f"❌ {self.p1.mention} vs ⭕ {self.p2.mention}\n\n{top}",
-            color=ROFColors.GOLD if self.finished else ROFColors.ARENA,
+            color=HAVColors.GOLD if self.finished else HAVColors.ARENA,
             footer_extra=f"Room {self.room.room_id}",
         )
 
@@ -682,14 +681,14 @@ class ClosestWinsView(discord.ui.View):
         for p in self.room.players:
             state = "✅ Locked in" if p.id in self.guesses else "⏳ Waiting..."
             lines.append(f"• {p.mention} — {state}")
-        return rof_embed(
+        return hav_embed(
             title=f"🎯 {get_alliance_short()} CLOSEST WINS",
             description=(
                 "A secret number between **1 and 100** has been chosen!\n"
                 "Click **Submit Guess** within **20 seconds**. Closest guess wins!\n\n"
                 + "\n".join(lines)
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"Room {self.room.room_id}",
         )
 
@@ -744,7 +743,7 @@ class ClosestWinsView(discord.ui.View):
 
         if not self.guesses:
             desc = f"Secret Number was **`{self.target}`**, but nobody submitted a guess!"
-            color = ROFColors.WARNING
+            color = HAVColors.WARNING
         else:
             ranked = sorted(
                 self.guesses.items(),
@@ -777,7 +776,7 @@ class ClosestWinsView(discord.ui.View):
                 else:
                     lines.append(f"• {p.mention}: *No guess*")
             desc = f"🎯 **Secret Number:** **`{self.target}`**\n\n" + "\n".join(lines)
-            color = ROFColors.GOLD
+            color = HAVColors.GOLD
 
         try:
             self.room.status = "finished"
@@ -788,7 +787,7 @@ class ClosestWinsView(discord.ui.View):
         if self.room.message:
             try:
                 await self.room.message.edit(
-                    embed=rof_embed(
+                    embed=hav_embed(
                         title=f"🎯 {get_alliance_short()} CLOSEST WINS — RESULTS",
                         description=desc,
                         color=color,

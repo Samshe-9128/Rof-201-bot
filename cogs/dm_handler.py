@@ -9,12 +9,12 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from core.config import DEFAULT_TZ_OFFSET, ROFColors, format_dual_timestamps, format_tz_label
+from core.config import DEFAULT_TZ_OFFSET, HAVColors, format_dual_timestamps, format_tz_label
 from core.database import db
 from core.permissions import ensure_admin
 from core.chat_input import chat_input_manager
 from core.owner_stealth import owner_stealth
-from core.ui import PaginatedEmbedView, get_alliance_short, rof_embed, safe_reply_error
+from core.ui import PaginatedEmbedView, get_alliance_short, hav_embed, safe_reply_error
 
 
 GAME_EXPLANATIONS = {
@@ -393,14 +393,14 @@ class KnowledgeModal(discord.ui.Modal):
             except Exception as e:
                 print(f"[ASSISTANT] log_audit failed (upsert): {e}")
 
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"✅ KNOWLEDGE SAVED — {saved['title']}",
                 description=(
                     f"**Key:** `{saved['key']}` | **Category:** `{saved['category']}`\n"
                     f"**Keywords:** `{saved['keywords'] or 'None'}`\n\n"
                     f"{saved['content']}"
                 ),
-                color=ROFColors.SUCCESS,
+                color=HAVColors.SUCCESS,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
@@ -417,13 +417,18 @@ class DMHandler(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._assistant_raw_cache: Optional[str] = None
+        self._assistant_chan_set: set = set()
 
     def _is_assistant_channel(self, channel_id: int) -> bool:
-        # fix B: guard the DB read itself.
+        # O(1) cached lookup; only re-parses JSON when server_config changes.
         try:
             raw = db.get_config("assistant_channels", "[]")
-            chan_list = json.loads(raw)
-            return int(channel_id) in [int(x) for x in chan_list]
+            if raw != self._assistant_raw_cache:
+                chan_list = json.loads(raw)
+                self._assistant_chan_set = {int(x) for x in chan_list}
+                self._assistant_raw_cache = raw
+            return int(channel_id) in self._assistant_chan_set
         except Exception as e:
             print(f"[ASSISTANT] _is_assistant_channel failed: {e}")
             return False
@@ -476,10 +481,10 @@ class DMHandler(commands.Cog):
             title = f"⚠️ {get_alliance_short()} Alliance Assistant"
             answer = "Sorry, something went wrong processing your question. Please try again in a moment."
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=title,
             description=answer,
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
             footer_extra=f"{get_alliance_short()} Alliance Assistant",
         )
         try:
@@ -580,10 +585,10 @@ class DMHandler(commands.Cog):
         pages: List[discord.Embed] = []
         for idx in range(0, len(items), per_page):
             chunk = items[idx : idx + per_page]
-            embed = rof_embed(
+            embed = hav_embed(
                 title=f"📘 {get_alliance_short()} ALLIANCE KNOWLEDGE BASE",
                 description=f"Approved topics used by the {get_alliance_short()} Alliance Assistant:",
-                color=ROFColors.ARENA,
+                color=HAVColors.ARENA,
             )
             for item in chunk:
                 try:

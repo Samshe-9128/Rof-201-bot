@@ -8,12 +8,12 @@ from discord import app_commands
 from discord.ext import commands
 from typing import Dict, List, Optional, Tuple
 
-from core.config import GUILD_ID, ROFColors
+from core.config import HAVColors
 from core.database import db
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
-from core.ui import BugReportModal, get_alliance_short, safe_edit_or_send, safe_reply_error, rof_embed
+from core.ui import BugReportModal, get_alliance_short, safe_edit_or_send, safe_reply_error, hav_embed
 
 
 def generate_secret_code(allow_repeats: bool = False) -> str:
@@ -186,11 +186,11 @@ class CodebreakerMatchView(discord.ui.View):
             f"🟢 = Correct digit & position | 🟡 = Correct digit, wrong position\n"
             f"*All guesses and clues are private to each player.*"
         )
-        color = ROFColors.ARENA
+        color = HAVColors.ARENA
         if self.finished:
-            color = ROFColors.SUCCESS if self.winner else ROFColors.ERROR
+            color = HAVColors.SUCCESS if self.winner else HAVColors.ERROR
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🔐 {get_alliance_short()} CODEBREAKER",
             description=desc,
             color=color,
@@ -254,14 +254,14 @@ class CodebreakerMatchView(discord.ui.View):
         ]
         board_text = "\n".join(history_lines) if history_lines else "*No guesses submitted yet.*"
 
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🔐 {get_alliance_short()} CODEBREAKER — YOUR CLUES",
             description=(
                 f"Crack the four-digit secret code!\n"
                 f"**Attempts:** `{len(p_guesses)} / {self.max_attempts}`\n"
                 f"**Time remaining:** `{mins:02d}:{secs:02d}`"
             ),
-            color=ROFColors.INFO,
+            color=HAVColors.INFO,
         )
         embed.add_field(name="Your Previous Guesses", value=board_text, inline=False)
         return embed
@@ -356,7 +356,7 @@ class CodebreakerMatchView(discord.ui.View):
         # Send private clue board immediately
         private_embed = self.build_private_board(interaction.user.id)
         if greens == 4:
-            private_embed.color = ROFColors.SUCCESS
+            private_embed.color = HAVColors.SUCCESS
             private_embed.add_field(
                 name="🎉 CODE CRACKED!",
                 value=f"You solved `{self.secret_code}` in **{len(p_list)}** attempts!",
@@ -503,14 +503,14 @@ class CodebreakerFinishedView(discord.ui.View):
                 "⚠️ Could not load your profile right now.", ephemeral=True
             )
         gstat = (prof.get("game_stats") or {}).get("Codebreaker", {})
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"📊 {interaction.user.display_name} — Codebreaker Stats",
             description=(
                 f"**Played:** `{gstat.get('played', 0)}` | **Wins:** `{gstat.get('wins', 0)}`\n"
                 f"**Best Score:** `{gstat.get('best_score', 0)}` | "
                 f"**Total Points:** `{prof.get('points', 0)}`"
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -706,7 +706,7 @@ class CodebreakerGameView(discord.ui.View):
 
     def get_embed(self):
         prompt = "" if self._ended else "\n💬 **Type your 4-digit guess (`1–6`) directly in chat!**"
-        embed = rof_embed(
+        embed = hav_embed(
             title=f"🔐 {get_alliance_short()} Codebreaker (1v1 Duel)",
             description=(
                 f"**{self.opponent.mention}** is trying to crack "
@@ -714,7 +714,7 @@ class CodebreakerGameView(discord.ui.View):
                 f"🟩 = Right number, right spot | 🟨 = Right number, wrong spot | "
                 f"⬛ = Wrong number{prompt}\n"
             ),
-            color=ROFColors.ARENA,
+            color=HAVColors.ARENA,
         )
         board = "\n".join(f"`{g['guess']}`  ➔  {g['result']}" for g in self.guesses)
         embed.add_field(
@@ -770,7 +770,7 @@ class CodebreakerGameView(discord.ui.View):
         arcade = self.cog.bot.get_cog("ArcadeCore")
 
         if self.won:
-            embed.color = ROFColors.SUCCESS
+            embed.color = HAVColors.SUCCESS
             embed.add_field(
                 name="Result",
                 value=f"🏆 **{self.opponent.mention} cracked the code!**",
@@ -783,7 +783,7 @@ class CodebreakerGameView(discord.ui.View):
                 except Exception as e:
                     print(f"[CODEBREAKER] arcade.add_points failed (win): {e}")
         else:
-            embed.color = ROFColors.ERROR
+            embed.color = HAVColors.ERROR
             embed.add_field(
                 name="Result",
                 value=f"❌ **Out of guesses!** The code was `{''.join(self.secret_code)}`",
