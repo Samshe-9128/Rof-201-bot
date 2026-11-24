@@ -26,43 +26,7 @@ DEFAULT_RULES_LIST = [
     "Follow event instructions from alliance leadership and have fun as a team!",
 ]
 
-DEFAULT_KNOWLEDGE_ENTRIES = [
-    {
-        "key": "surge_guide",
-        "title": "Surge Event Guide",
-        "category": "Events",
-        "content": "During Surge, rally with online alliance members at the scheduled Game Time. Check `/events` for the exact start time and join voice or event chat before launch.",
-        "keywords": "surge event guide schedule rally how to play surge",
-    },
-    {
-        "key": "svs_strategy",
-        "title": "State vs State (SVS) & Alliance Brawl Strategy",
-        "category": "Strategy",
-        "content": "Save your speedups and stamina items for official SVS and Alliance Brawl windows. Shield up if you are offline during combat phases and coordinate rallies with R4/R5 leaders.",
-        "keywords": "svs state brawl strategy shield rally r4 r5 combat",
-    },
-    {
-        "key": "codebreaker_help",
-        "title": "How to Play Four-Digit Codebreaker",
-        "category": "Games",
-        "content": "Create or join a Codebreaker room via `/games` or `/codebreaker`. The bot generates a 4-digit secret code with unique digits (no leading zero). Submit 4-digit guesses privately; 🟢 shows digits in the exact position and 🟡 shows correct digits in the wrong position.",
-        "keywords": "codebreaker how to play 4 digit secret code clues mastermind",
-    },
-    {
-        "key": "event_permissions",
-        "title": "Who Can Schedule Alliance Events",
-        "category": "FAQ",
-        "content": "Only authorized administrators and the bot owner can create, edit, or cancel alliance events. All members can view upcoming events at any time using `/events`.",
-        "keywords": "schedule create add modify cancel event permission admin who can",
-    },
-    {
-        "key": "member_responsibilities",
-        "title": "HAV Member Responsibilities",
-        "category": "Guides",
-        "content": "Stay active, contribute to alliance tech donations daily, check `/events` for upcoming battles, and treat fellow Haven (HAV) members with respect.",
-        "keywords": "member responsibilities duties donations active rules guide",
-    },
-]
+from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES
 
 
 def _utc_now_str() -> str:
@@ -168,9 +132,10 @@ class MongoDatabase:
             # Remove deprecated alliance-override keys so HAV / Haven is authoritative
             self._config.delete_many({"key": {"$in": ["alliance_short", "alliance_name", "alliance_footer"]}})
 
-            # Seed default knowledge base if empty
-            if self._knowledge.count_documents({}) == 0:
-                for item in DEFAULT_KNOWLEDGE_ENTRIES:
+            # Auto-seed any missing default knowledge base entries (preserves custom edits)
+            existing_keys = {d.get("key") for d in self._knowledge.find({}, {"key": 1})}
+            for item in DEFAULT_KNOWLEDGE_ENTRIES:
+                if item["key"] not in existing_keys:
                     self._knowledge.update_one(
                         {"key": item["key"]},
                         {

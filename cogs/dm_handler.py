@@ -1,3 +1,4 @@
+import time
 # cogs/dm_handler.py
 import difflib
 import json
@@ -11,6 +12,7 @@ from typing import List, Optional, Tuple
 
 from core.config import DEFAULT_TZ_OFFSET, HAVColors, format_dual_timestamps, format_tz_label
 from core.database import db
+from core.loj_calculator import answer_loj_structured_query
 from core.permissions import ensure_admin
 from core.chat_input import chat_input_manager
 from core.owner_stealth import owner_stealth
@@ -124,7 +126,19 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
     short = get_alliance_short()
     q = (raw_query or "").strip()
     q_low = q.lower()
-    tokens = set(re.findall(r"[a-z0-9]+", q_low))
+    _SYNONYMS = {
+        "euipment": "equipment", "equip": "equipment", "eq": "equipment", "gear": "equipment",
+        "lvl": "level", "lv": "level", "fc": "forticlad", "wo": "office",
+        "cc": "crystal clash", "ut": "ultimate trial", "cage": "ultimate trial",
+        "urself": "yourself", "ur": "your", "u": "you", "r": "are",
+        "ref": "reformation", "reform": "reformation", "heros": "heroes",
+        "troop": "troops", "brawl": "alliance brawl", "svs": "svs supreme honor", "riots": "riot", "shields": "shield", "join": "joiner joiners",
+    }
+    raw_tokens = re.findall(r"[a-z0-9]+", q_low)
+    tokens = set(raw_tokens)
+    for t in raw_tokens:
+        if t in _SYNONYMS:
+            tokens.update(_SYNONYMS[t].split())
 
     # 1. Security guardrail
     if any(p in q_low for p in _SECURITY_TRIGGERS):
@@ -181,7 +195,7 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
             continue
 
     # 6. General "when / upcoming" listing
-    if any(w in tokens for w in ["event", "events", "schedule", "upcoming", "next", "surge", "brawl", "svs"]):
+    if any(w in tokens for w in ["event", "events", "schedule", "upcoming", "next", "surge", "brawl", "svs"]) and not re.search(r"\b(?:day|d)\s*[1-5]\b", q_low) and "prep" not in tokens and "preparation" not in tokens:
         if any(w in tokens for w in ["when", "next", "upcoming", "schedule", "events", "time"]):
             if not upcoming:
                 return (
@@ -219,7 +233,20 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
         if g_key in q_low:
             return (f"🎮 How to Play — {g_key.title()}", g_exp)
 
-    if any(w in tokens for w in ["games", "game", "play", "arena"]):
+    _LOJ_HINT_WORDS = {
+        "jail", "loj", "hero", "heroes", "troop", "troops", "gorilla", "tyron", "tyronn",
+        "wukong", "ada", "phoenix", "inata", "jasser", "barry", "patrick", "whisper",
+        "lunarl", "veronica", "koschevoi", "sawyer", "ryuichi", "equipment", "gear",
+        "firearms", "vest", "cuffs", "diamond", "diamonds", "code", "codes",
+        "redeem", "warehouse", "inventory", "power", "camp", "training", "inmate", "inmates",
+        "rally", "joiner", "joiners", "leader", "leaders", "garrison", "plunder", "shield",
+        "city", "hall", "prison", "warden", "office", "lineup", "squad", "ratio", "ratios",
+        "dice", "brawl", "gasoline", "cosmos", "cosmic", "satellite", "satellites",
+        "overclock", "trial", "cage", "scarlet", "butcher", "crystal", "clash",
+        "sandsea", "dreadwaker", "overlord", "forticlad", "barracks", "medical",
+        "factory", "riot", "svs", "honor", "haven", "island",
+    }
+    if any(w in tokens for w in ["games", "game", "play", "arena"]) and not (tokens & _LOJ_HINT_WORDS):
         return (
             f"🎮 {short} Gaming Arena",
             f"Use `/games` to open the **{short} Gaming Arena**! You can play 12 Single-Player games "
@@ -228,7 +255,7 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
         )
 
     # 8. Alliance rules — fix A
-    if any(w in tokens for w in ["rule", "rules"]):
+    if any(w in tokens for w in ["rule", "rules"]) and not (tokens & {"crystal", "clash", "svs", "supreme", "honor", "joiner", "joiners", "rally", "trial", "cage", "sandsea", "dreadwaker"}):
         try:
             rules_text = db.get_formatted_rules()
         except Exception as e:
@@ -248,13 +275,59 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
             "• `/help` — Full command guide",
         )
 
+    # 10a. Bot identity & creator (Sam — Server 201)
+    _CREATOR_PHRASES = (
+        "who made you", "who made u", "who built you", "who built u",
+        "who created you", "who created u", "who is your owner", "who is ur owner",
+        "who is your creator", "who is your dev", "who is your developer",
+        "who owns you", "who owns u", "who coded you", "who coded u",
+        "who programmed you", "who is sam",
+    )
+    _ABOUT_BOT_PHRASES = (
+        "who are you", "who are u", "who r u", "who r you",
+        "tell me about yourself", "tell me about ur self", "tell me about urself",
+        "about yourself", "about urself", "about ur self", "about you", "about u",
+        "introduce yourself", "introduce urself", "what are you", "what are u",
+        "what r u", "what can you do", "what can u do", "what do you do",
+    )
+    if any(re.search(rf"\b{re.escape(p)}\b", q_low) for p in _CREATOR_PHRASES):
+        return (
+            f"👑 Creator — Sam (Server 201)",
+            f"I was built by **Sam** from **Server 201** for the **Haven ({short})** alliance in **Lands of Jail**!\n"
+            f"If you ever spot a bug or want a new feature, just ping **Sam** or use the **Report Bug** button.",
+        )
+
+    if any(re.search(rf"\b{re.escape(p)}\b", q_low) for p in _ABOUT_BOT_PHRASES):
+        return (
+            f"🛡️ I'm {short} Bot — Haven Alliance Assistant",
+            f"Hey! I'm **{short} Bot**, the official Discord bot for the **Haven ({short})** alliance on **Server 201** in **Lands of Jail**, built by **Sam** (Server 201).\n\n"
+            "Here's what I can help you with:\n"
+            "• **Lands of Jail Guides** — Ask me about heroes, rally leaders/joiners, Trial Cage, SvS prep days, Crystal Clash, Cosmos Hub, buildings, or gift codes\n"
+            "• **Alliance Events & Rules** — Check `/events` (Game Time + IST) or `/rules view`\n"
+            "• **22 Alliance Games** — Play solo or multiplayer anytime with `/games`",
+        )
+
+    if any(p in q_low for p in ("which server", "what server", "our server", "server 201")) and "svs" not in tokens:
+        return (
+            f"🌐 Haven ({short}) — Server 201",
+            f"We're the **Haven ({short})** alliance on **Server 201** in **Lands of Jail** (bot built by **Sam**).",
+        )
+
     # 10. Greetings
-    if len(tokens) <= 4 and (tokens & {"hi", "hello", "hey", "yo", "hola", "sup"}):
+    if len(raw_tokens) <= 2 and (set(raw_tokens) & {"hi", "hello", "hey", "yo", "hola", "sup"}):
         return (
             f"🛡️ {short} Alliance Assistant",
-            f"Hello warrior! Ask me about upcoming alliance events (e.g. *\"When is the next Surge?\"*), "
+            f"Hey! I'm **{short} Bot** (built by **Sam** for **Haven** on **Server 201**). Ask me about **Lands of Jail** (heroes, Trial Cage, SvS, Crystal Clash, buildings), upcoming events, "
             f"alliance rules, strategies, or how to play any {short} game — or use `/games`, `/events`, and `/help`.",
         )
+
+    # 8b. Lands of Jail exact upgrade calculators, hero directory, SvS days & buff pricing
+    try:
+        loj_ans = answer_loj_structured_query(q)
+        if loj_ans is not None:
+            return loj_ans
+    except Exception as e:
+        print(f"[ASSISTANT] loj_calculator failed: {e}")
 
     # 9. Knowledge Base search — fix A
     try:
@@ -272,7 +345,15 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
                 f"{item.get('category', '')} {item.get('keywords', '')}"
             ).lower()
             hay_tokens = set(re.findall(r"[a-z0-9]+", haystack))
-            overlap = len(tokens & hay_tokens)
+            _KB_STOP = {
+                "how", "to", "what", "who", "can", "is", "are", "the", "a", "an",
+                "for", "in", "on", "of", "do", "i", "my", "me", "tell", "please",
+                "about", "hey", "hi", "explain", "info", "guide", "should", "and",
+                "or", "you", "your", "from", "with", "much", "many", "get", "lands", "jail",
+            }
+            q_meaningful = {t for t in tokens if t not in _KB_STOP} or tokens
+            h_meaningful = {t for t in hay_tokens if t not in _KB_STOP} or hay_tokens
+            overlap = len(q_meaningful & h_meaningful)
             seq_ratio = difflib.SequenceMatcher(
                 None, q_low, (item.get("title") or "").lower()
             ).ratio()
@@ -419,6 +500,7 @@ class DMHandler(commands.Cog):
         self.bot = bot
         self._assistant_raw_cache: Optional[str] = None
         self._assistant_chan_set: set = set()
+        self._mention_cooldowns: dict = {}
 
     def _is_assistant_channel(self, channel_id: int) -> bool:
         # O(1) cached lookup; only re-parses JSON when server_config changes.
@@ -450,9 +532,30 @@ class DMHandler(commands.Cog):
         ):
             return
 
+        bot_role_ids = set()
         try:
             is_dm = message.guild is None
-            is_mentioned = bool(self.bot.user and self.bot.user in message.mentions)
+            is_user_mentioned = bool(
+                self.bot.user
+                and (
+                    self.bot.user in message.mentions
+                    or any(getattr(u, "id", None) == self.bot.user.id for u in message.mentions)
+                )
+            )
+            # Also catch when a member @mentions the bot's auto-created managed role in a server channel
+            is_role_mentioned = False
+            if not is_dm and message.guild and message.role_mentions:
+                me = message.guild.me
+                my_roles = set(getattr(me, "roles", []) or []) if me else set()
+                for role in message.role_mentions:
+                    if role in my_roles and (
+                        (hasattr(role, "is_bot_managed") and role.is_bot_managed())
+                        or (self.bot.user and role.name.lower() == self.bot.user.name.lower())
+                    ):
+                        is_role_mentioned = True
+                        bot_role_ids.add(role.id)
+
+            is_mentioned = is_user_mentioned or is_role_mentioned
             is_configured_chan = (not is_dm) and self._is_assistant_channel(message.channel.id)
         except Exception as e:
             print(f"[ASSISTANT] channel check failed: {e}")
@@ -461,14 +564,27 @@ class DMHandler(commands.Cog):
         if not (is_dm or is_mentioned or is_configured_chan):
             return
 
+        # Light 2-second per-user cooldown in server channels to prevent ping spam
+        if not is_dm:
+            now_mono = time.monotonic()
+            last_t = self._mention_cooldowns.get(message.author.id, 0.0)
+            if now_mono - last_t < 2.0:
+                return
+            self._mention_cooldowns[message.author.id] = now_mono
+            if len(self._mention_cooldowns) > 200:
+                cutoff = now_mono - 60.0
+                self._mention_cooldowns = {k: v for k, v in self._mention_cooldowns.items() if v > cutoff}
+
         clean_text = message.content
         if self.bot.user:
             clean_text = (
                 clean_text
                 .replace(f"<@{self.bot.user.id}>", "")
                 .replace(f"<@!{self.bot.user.id}>", "")
-                .strip()
             )
+        for rid in bot_role_ids:
+            clean_text = clean_text.replace(f"<@&{rid}>", "")
+        clean_text = clean_text.strip()
         if not clean_text:
             clean_text = "help"
 
@@ -488,9 +604,15 @@ class DMHandler(commands.Cog):
             footer_extra=f"{get_alliance_short()} Alliance Assistant",
         )
         try:
-            await message.channel.send(embed=embed)
-        except Exception as e:
-            print(f"[ASSISTANT] Failed to send reply: {e}")
+            if not is_dm:
+                await message.reply(embed=embed, mention_author=False)
+            else:
+                await message.channel.send(embed=embed)
+        except Exception:
+            try:
+                await message.channel.send(embed=embed)
+            except Exception as e:
+                print(f"[ASSISTANT] Failed to send reply: {e}")
 
     # ---------- /knowledge COMMAND GROUP ----------
 

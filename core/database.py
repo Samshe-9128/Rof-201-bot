@@ -28,43 +28,7 @@ DEFAULT_RULES_LIST = [
     "Follow event instructions from alliance leadership and have fun as a team!",
 ]
 
-DEFAULT_KNOWLEDGE_ENTRIES = [
-    {
-        "key": "surge_guide",
-        "title": "Surge Event Guide",
-        "category": "Events",
-        "content": "During Surge, rally with online alliance members at the scheduled Game Time. Check `/events` for the exact start time and join voice or event chat before launch.",
-        "keywords": "surge event guide schedule rally how to play surge",
-    },
-    {
-        "key": "svs_strategy",
-        "title": "State vs State (SVS) & Alliance Brawl Strategy",
-        "category": "Strategy",
-        "content": "Save your speedups and stamina items for official SVS and Alliance Brawl windows. Shield up if you are offline during combat phases and coordinate rallies with R4/R5 leaders.",
-        "keywords": "svs state brawl strategy shield rally r4 r5 combat",
-    },
-    {
-        "key": "codebreaker_help",
-        "title": "How to Play Four-Digit Codebreaker",
-        "category": "Games",
-        "content": "Create or join a Codebreaker room via `/games` or `/codebreaker`. The bot generates a 4-digit secret code with unique digits (no leading zero). Submit 4-digit guesses privately; 🟢 shows digits in the exact position and 🟡 shows correct digits in the wrong position.",
-        "keywords": "codebreaker how to play 4 digit secret code clues mastermind",
-    },
-    {
-        "key": "event_permissions",
-        "title": "Who Can Schedule Alliance Events",
-        "category": "FAQ",
-        "content": "Only authorized administrators and the bot owner can create, edit, or cancel alliance events. All members can view upcoming events at any time using `/events`.",
-        "keywords": "schedule create add modify cancel event permission admin who can",
-    },
-    {
-        "key": "member_responsibilities",
-        "title": "HAV Member Responsibilities",
-        "category": "Guides",
-        "content": "Stay active, contribute to alliance tech donations daily, check `/events` for upcoming battles, and treat fellow Haven (HAV) members with respect.",
-        "keywords": "member responsibilities duties donations active rules guide",
-    },
-]
+from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES
 
 
 class _PooledConn:
@@ -290,16 +254,14 @@ class Database:
                             (k, v),
                         )
 
-                    kb_count = conn.execute("SELECT COUNT(*) FROM knowledge_base").fetchone()[0]
-                    if kb_count == 0:
-                        for item in DEFAULT_KNOWLEDGE_ENTRIES:
-                            conn.execute(
-                                """
-                                INSERT OR IGNORE INTO knowledge_base (key, title, category, content, keywords)
-                                VALUES (?, ?, ?, ?, ?)
-                                """,
-                                (item["key"], item["title"], item["category"], item["content"], item["keywords"]),
-                            )
+                    for item in DEFAULT_KNOWLEDGE_ENTRIES:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO knowledge_base (key, title, category, content, keywords)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (item["key"], item["title"], item["category"], item["content"], item["keywords"]),
+                        )
                     # Safe schema auto-migration for existing databases
                     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
                     if "repeat_days" not in ev_cols:
