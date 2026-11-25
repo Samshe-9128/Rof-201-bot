@@ -121,3 +121,13 @@ def get_rank_info(points: int) -> tuple:
         if points >= threshold:
             current = (threshold, name, icon)
     return current
+
+
+RANKS = RANK_LADDER
+
+
+def get_rank(points: int, alliance_short: str | None = None) -> tuple[str, str]:
+    _, name, icon = get_rank_info(points)
+    if alliance_short and name == "HAV Legend":
+        name = f"{alliance_short} Legend"
+    return name, icon
