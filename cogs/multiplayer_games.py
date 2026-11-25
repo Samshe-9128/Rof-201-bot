@@ -5,7 +5,6 @@ import time
 import traceback
 import discord
 from discord.ext import commands
-from typing import Dict, Optional, Tuple
 
 from cogs.singleplayer_games import (
     EMOJI_PUZZLES,
@@ -24,18 +23,19 @@ from core.owner_stealth import owner_stealth
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.ui import BugReportModal, get_alliance_short, safe_reply_error, hav_embed
 
-
 # ==============================================================================
 # 3.3 WORD GUESSING RACE & 3.7 MULTIPLAYER EMOJI GUESSING
 # ==============================================================================
 
 class RaceAnswerModal(discord.ui.Modal, title="Submit Your Answer"):
-    answer_input = discord.ui.TextInput(
-        label="Your Answer",
-        placeholder="Type your answer fast...",
-        min_length=1,
-        max_length=50,
-        required=True,
+    answer_input = discord.ui.Label(
+        text="Your Answer",
+        component=discord.ui.TextInput(
+            placeholder="Type your answer fast...",
+            min_length=1,
+            max_length=50,
+            required=True,
+        ),
     )
 
     def __init__(self, view: "MultiRoundRaceView"):
@@ -45,7 +45,7 @@ class RaceAnswerModal(discord.ui.Modal, title="Submit Your Answer"):
     async def on_submit(self, interaction: discord.Interaction):
         # fix E: never leave the modal spinning.
         try:
-            await self.view.handle_submission(interaction, self.answer_input.value.strip())
+            await self.view.handle_submission(interaction, self.answer_input.component.value.strip())
         except Exception as e:
             print(f"[MULTI] RaceAnswerModal error: {type(e).__name__}: {e}")
             traceback.print_exc()
@@ -57,7 +57,6 @@ class RaceAnswerModal(discord.ui.Modal, title="Submit Your Answer"):
                     )
             except Exception:
                 pass
-
 
 class MultiRoundRaceView(discord.ui.View):
     """Handles multi-round races for Word Guessing Race (3.3), Quick Math Battle (3.4), and Emoji Race (3.7)."""
@@ -77,14 +76,14 @@ class MultiRoundRaceView(discord.ui.View):
         self.total_rounds = total_rounds
         self.round_seconds = round_seconds
         self.current_round = 1
-        self.scores: Dict[int, int] = {p.id: 0 for p in room.players}
-        self.round_winner: Optional[discord.abc.User] = None
-        self.round_solved_by: Dict[int, int] = {}
+        self.scores: dict[int, int] = {p.id: 0 for p in room.players}
+        self.round_winner: discord.abc.User | None = None
+        self.round_solved_by: dict[int, int] = {}
         self.used_items = set()
         self.finished = False
         self._finished_guard = False
         self._last_advanced_round = 0   # fix B
-        self.round_task: Optional[asyncio.Task] = None
+        self.round_task: asyncio.Task | None = None
         self.channel_id: int = 0
         self.session_id = f"multi_race:{room.room_id}"
         self._prepare_round()
@@ -469,7 +468,6 @@ class MultiRoundRaceView(discord.ui.View):
             except Exception as e:
                 print(f"[MULTI] final embed edit failed: {e}")
 
-
 # ==============================================================================
 # 3.5 TRIVIA BATTLE (PRIVATE LOCKED ANSWERS, TIE HANDLING)
 # ==============================================================================
@@ -483,12 +481,12 @@ class TriviaBattleView(discord.ui.View):
         random.shuffle(pool)
         self.questions = pool[: min(total_rounds, len(pool))]
         self.round_idx = 0
-        self.scores: Dict[int, int] = {p.id: 0 for p in room.players}
-        self.submissions: Dict[int, Tuple[str, float]] = {}
+        self.scores: dict[int, int] = {p.id: 0 for p in room.players}
+        self.submissions: dict[int, tuple[str, float]] = {}
         self.finished = False
         self._finished_guard = False
         self._last_advanced_round = -1   # fix B (use -1 to allow round 0)
-        self.round_task: Optional[asyncio.Task] = None
+        self.round_task: asyncio.Task | None = None
         self._setup_round()
 
     def _setup_round(self):
@@ -711,7 +709,6 @@ class TriviaBattleView(discord.ui.View):
             except Exception as e:
                 print(f"[MULTI] trivia db record failed ({p.id}): {e}")
 
-
         embed = self.build_embed(final_summary)
         if is_tie:
             embed.add_field(
@@ -740,7 +737,6 @@ class TriviaBattleView(discord.ui.View):
             except Exception as e:
                 print(f"[MULTI] trivia final embed edit failed: {e}")
 
-
 # ==============================================================================
 # 3.6 MULTIPLAYER ROCK PAPER SCISSORS (PRIVATE MOVES, BO3 / BO5)
 # ==============================================================================
@@ -755,7 +751,7 @@ class MultiplayerRPSView(discord.ui.View):
         self.best_of = best_of
         self.target_wins = (best_of // 2) + 1
         self.scores = {self.p1.id: 0, self.p2.id: 0}
-        self.current_moves: Dict[int, str] = {}
+        self.current_moves: dict[int, str] = {}
         self.round_num = 1
         self.last_reveal = "Both players: choose your move privately below!"
         self.finished = False
@@ -920,7 +916,6 @@ class MultiplayerRPSView(discord.ui.View):
         except Exception as e:
             print(f"[MULTI] rps loser record failed: {e}")
 
-
         embed = self.build_embed()
         embed.add_field(
             name="🏆 Match Winner",
@@ -943,7 +938,6 @@ class MultiplayerRPSView(discord.ui.View):
             await self._finish_rps()
         except Exception as e:
             print(f"[MULTI] rps on_timeout finish failed: {e}")
-
 
 class MultiRematchView(discord.ui.View):
     def __init__(self, cog: "MultiplayerGames", mode: str, best_of: int = 3):
@@ -978,7 +972,6 @@ class MultiRematchView(discord.ui.View):
     @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
     async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal(self.mode))
-
 
 class MultiplayerGames(commands.Cog):
     def __init__(self, bot):
@@ -1086,7 +1079,6 @@ class MultiplayerGames(commands.Cog):
             room.message = await interaction.original_response()
         except Exception:
             pass
-
 
 async def setup(bot):
     await bot.add_cog(MultiplayerGames(bot))

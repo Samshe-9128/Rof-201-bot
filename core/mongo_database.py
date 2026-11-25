@@ -5,9 +5,9 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from pymongo import ASCENDING, DESCENDING, MongoClient
+from pymongo import ASCENDING, DESCENDING, MongoClient, ReturnDocument
 
 from core.config import (
     DATA_DIR,
@@ -28,25 +28,22 @@ DEFAULT_RULES_LIST = [
 
 from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES
 
-
 def _utc_now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-
-def _strip_id(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _strip_id(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     if not doc:
         return None
     out = dict(doc)
     out.pop("_id", None)
     return out
 
-
 class MongoDatabase:
     """Drop-in MongoDB backend matching the exact API of SQLite Database."""
 
     backend = "MongoDB"
 
-    def __init__(self, mongo_uri: str, db_name: str = "haven_bot", client: Optional[Any] = None):
+    def __init__(self, mongo_uri: str, db_name: str = "haven_bot", client: Any | None = None):
         self._lock = threading.RLock()
         self._db_name = db_name
         self.db_path = f"mongodb://{db_name}"
@@ -73,7 +70,7 @@ class MongoDatabase:
         self._kv = self._db["kv_store"]
         self._counters = self._db["_counters"]
 
-        self._config_cache: Dict[str, str] = {}
+        self._config_cache: dict[str, str] = {}
         self._init_db()
         self._load_config_cache()
 
@@ -90,7 +87,7 @@ class MongoDatabase:
             {"_id": name},
             {"$inc": {"seq": 1}},
             upsert=True,
-            return_document=True,
+            return_document=ReturnDocument.AFTER,
         )
         return int(doc["seq"])
 
@@ -204,7 +201,7 @@ class MongoDatabase:
             )
             self._config_cache[k_str] = v_str
 
-    def get_all_config(self) -> Dict[str, str]:
+    def get_all_config(self) -> dict[str, str]:
         with self._lock:
             return dict(sorted(self._config_cache.items()))
 
@@ -247,11 +244,11 @@ class MongoDatabase:
             res = self._admins.delete_one({"target_id": int(target_id), "target_type": target_type})
             return res.deleted_count > 0
 
-    def get_admins(self) -> List[Dict[str, Any]]:
+    def get_admins(self) -> list[dict[str, Any]]:
         with self._lock:
             return [_strip_id(d) for d in self._admins.find({})]
 
-    def is_db_admin(self, user_id: int, role_ids: List[int] = None) -> bool:
+    def is_db_admin(self, user_id: int, role_ids: list[int] = None) -> bool:
         with self._lock:
             if self._admins.find_one({"target_id": int(user_id), "target_type": "user"}):
                 return True
@@ -275,7 +272,7 @@ class MongoDatabase:
                 }
             )
 
-    def get_audit_logs(self, limit: int = 15) -> List[Dict[str, Any]]:
+    def get_audit_logs(self, limit: int = 15) -> list[dict[str, Any]]:
         with self._lock:
             docs = self._audit.find({}).sort("id", DESCENDING).limit(int(limit))
             return [_strip_id(d) for d in docs]
@@ -291,7 +288,7 @@ class MongoDatabase:
         points_earned: int = 0,
         attempts: int = 0,
         duration_sec: float = 0.0,
-        reaction_ms: Optional[int] = None,
+        reaction_ms: int | None = None,
         mode: str = "single",
         username: str = "",
     ) -> int:
@@ -401,7 +398,7 @@ class MongoDatabase:
             )
             return int(new_pts)
 
-    def get_player_profile(self, user_id: int) -> Dict[str, Any]:
+    def get_player_profile(self, user_id: int) -> dict[str, Any]:
         uid = int(user_id)
         with self._lock:
             p = self._players.find_one({"user_id": uid})
@@ -451,7 +448,7 @@ class MongoDatabase:
                 "game_stats": games,
             }
 
-    def get_player_history(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_player_history(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
             docs = self._game_history.find({"user_id": int(user_id)}).sort("played_at", DESCENDING).limit(int(limit))
             return [_strip_id(d) for d in docs]
@@ -459,13 +456,13 @@ class MongoDatabase:
     def get_leaderboard(
         self,
         scope: str = "overall",
-        game_name: Optional[str] = None,
+        game_name: str | None = None,
         limit: int = 10,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         with self._lock:
             if scope == "weekly":
                 cutoff = int(time.time()) - (7 * 86400)
-                agg: Dict[int, Dict[str, Any]] = {}
+                agg: dict[int, dict[str, Any]] = {}
                 for h in self._game_history.find({"played_at": {"$gte": cutoff}}):
                     uid = int(h["user_id"])
                     entry = agg.setdefault(
@@ -586,7 +583,7 @@ class MongoDatabase:
         reminder_minutes: int = 10,
         repeat_days: int = 0,
         announce_enabled: int = 1,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         utc_iso = start_time_utc.astimezone(timezone.utc).isoformat()
         rep = max(0, min(365, int(repeat_days or 0)))
         ann = 1 if int(announce_enabled) else 0
@@ -614,15 +611,15 @@ class MongoDatabase:
     def update_event(
         self,
         event_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        start_time_utc: Optional[datetime] = None,
-        duration_minutes: Optional[int] = None,
-        channel_id: Optional[int] = None,
-        reminder_minutes: Optional[int] = None,
-        repeat_days: Optional[int] = None,
-        announce_enabled: Optional[int] = None,
-    ) -> Optional[Dict[str, Any]]:
+        name: str | None = None,
+        description: str | None = None,
+        start_time_utc: datetime | None = None,
+        duration_minutes: int | None = None,
+        channel_id: int | None = None,
+        reminder_minutes: int | None = None,
+        repeat_days: int | None = None,
+        announce_enabled: int | None = None,
+    ) -> dict[str, Any] | None:
         ev = self.get_event(event_id)
         if not ev:
             return None
@@ -665,7 +662,7 @@ class MongoDatabase:
             )
         return self.get_event(ev["id"])
 
-    def cancel_or_delete_event(self, event_id: str, delete_permanently: bool = False) -> Optional[Dict[str, Any]]:
+    def cancel_or_delete_event(self, event_id: str, delete_permanently: bool = False) -> dict[str, Any] | None:
         ev = self.get_event(event_id)
         if not ev:
             return None
@@ -679,7 +676,7 @@ class MongoDatabase:
                 )
         return ev
 
-    def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+    def get_event(self, event_id: str) -> dict[str, Any] | None:
         target = event_id.strip().lower()
         with self._lock:
             doc = self._events.find_one({"id": event_id.strip()})
@@ -691,16 +688,16 @@ class MongoDatabase:
                     return _strip_id(d)
             return None
 
-    def get_upcoming_events(self, include_cancelled: bool = False) -> List[Dict[str, Any]]:
+    def get_upcoming_events(self, include_cancelled: bool = False) -> list[dict[str, Any]]:
         now_iso = datetime.now(timezone.utc).isoformat()
-        query: Dict[str, Any] = {"start_time_utc": {"$gte": now_iso}}
+        query: dict[str, Any] = {"start_time_utc": {"$gte": now_iso}}
         if not include_cancelled:
             query["status"] = "scheduled"
         with self._lock:
             docs = self._events.find(query).sort("start_time_utc", ASCENDING)
             return [_strip_id(d) for d in docs]
 
-    def get_due_reminders(self) -> List[Dict[str, Any]]:
+    def get_due_reminders(self) -> list[dict[str, Any]]:
         now_utc = datetime.now(timezone.utc)
         due = []
         with self._lock:
@@ -744,10 +741,10 @@ class MongoDatabase:
                         )
         return due
 
-    def set_event_announce(self, event_id: str, enabled: bool) -> Optional[Dict[str, Any]]:
+    def set_event_announce(self, event_id: str, enabled: bool) -> dict[str, Any] | None:
         return self.update_event(event_id, announce_enabled=(1 if enabled else 0))
 
-    def set_event_repeat(self, event_id: str, repeat_days: int) -> Optional[Dict[str, Any]]:
+    def set_event_repeat(self, event_id: str, repeat_days: int) -> dict[str, Any] | None:
         return self.update_event(event_id, repeat_days=max(0, min(365, int(repeat_days))))
 
     def mark_reminder_sent(self, event_id: str):
@@ -759,7 +756,7 @@ class MongoDatabase:
 
     # ---------- Rules ----------
 
-    def get_rules_list(self) -> List[Dict[str, Any]]:
+    def get_rules_list(self) -> list[dict[str, Any]]:
         with self._lock:
             docs = self._rules.find({}).sort([("rule_number", ASCENDING), ("id", ASCENDING)])
             return [_strip_id(d) for d in docs]
@@ -835,7 +832,7 @@ class MongoDatabase:
         content: str,
         keywords: str = "",
         actor_id: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         clean_key = key.strip().lower().replace(" ", "_")
         now_s = _utc_now_str()
         with self._lock:
@@ -874,7 +871,7 @@ class MongoDatabase:
             res = self._knowledge.delete_one({"key": clean_key})
             return res.deleted_count > 0
 
-    def list_knowledge(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_knowledge(self, category: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             docs = [_strip_id(d) for d in self._knowledge.find({})]
             if category:
@@ -883,7 +880,7 @@ class MongoDatabase:
             docs.sort(key=lambda d: (str(d.get("category", "")), str(d.get("title", ""))))
             return docs
 
-    def get_knowledge(self, key: str) -> Optional[Dict[str, Any]]:
+    def get_knowledge(self, key: str) -> dict[str, Any] | None:
         clean_key = key.strip().lower().replace(" ", "_")
         with self._lock:
             return _strip_id(self._knowledge.find_one({"key": clean_key}))

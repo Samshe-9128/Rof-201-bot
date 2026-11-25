@@ -32,7 +32,6 @@ COGS_TO_LOAD = [
     "cogs.admin",
 ]
 
-
 class HavenBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -106,21 +105,17 @@ class HavenBot(commands.Bot):
 
         await safe_reply_error(interaction, msg)
 
-
 bot = HavenBot()
-
 
 @bot.event
 async def on_ready():
     backend = getattr(db, "backend", "SQLite")
     log.info("%s Bot online: %s (%s: %s)", BRAND_SHORT, bot.user, backend, db.db_path)
 
-
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     if GUILD_ID and guild.id != GUILD_ID:
         await guild.leave()
-
 
 if __name__ == "__main__":
     if not TOKEN:

@@ -6,7 +6,6 @@ import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Dict, List, Optional, Tuple
 
 from core.config import HAVColors
 from core.database import db
@@ -14,7 +13,6 @@ from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
 from core.ui import BugReportModal, get_alliance_short, safe_edit_or_send, safe_reply_error, hav_embed
-
 
 def generate_secret_code(allow_repeats: bool = False) -> str:
     """Generate a 4-digit secret code with no leading zero. Default: 4 unique digits."""
@@ -26,8 +24,7 @@ def generate_secret_code(allow_repeats: bool = False) -> str:
     rest = random.sample(pool, 3)
     return first + "".join(rest)
 
-
-def evaluate_codebreaker_guess(secret: str, guess: str) -> Tuple[int, int]:
+def evaluate_codebreaker_guess(secret: str, guess: str) -> tuple[int, int]:
     """
     Calculate exact Mastermind/Codebreaker clues:
     Returns (green_exact_position, yellow_wrong_position),
@@ -53,16 +50,17 @@ def evaluate_codebreaker_guess(secret: str, guess: str) -> Tuple[int, int]:
 
     return greens, yellows
 
-
 # ---------- MULTIPLAYER CODEBREAKER RACE (PRIORITY SPEC 3.8) ----------
 
 class CodebreakerRaceModal(discord.ui.Modal):
-    guess_input = discord.ui.TextInput(
-        label="Enter your 4-digit guess (No leading 0)",
-        placeholder="e.g., 4271",
-        min_length=4,
-        max_length=4,
-        required=True,
+    guess_input = discord.ui.Label(
+        text="Enter your 4-digit guess (No leading 0)",
+        component=discord.ui.TextInput(
+            placeholder="e.g., 4271",
+            min_length=4,
+            max_length=4,
+            required=True,
+        ),
     )
 
     def __init__(self, match_view: "CodebreakerMatchView"):
@@ -72,7 +70,7 @@ class CodebreakerRaceModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         # fix D: never let an exception leave the modal spinning forever.
         try:
-            await self.match_view.handle_guess(interaction, self.guess_input.value.strip())
+            await self.match_view.handle_guess(interaction, self.guess_input.component.value.strip())
         except Exception as e:
             print(f"[CODEBREAKER] modal submit error: {type(e).__name__}: {e}")
             traceback.print_exc()
@@ -85,7 +83,6 @@ class CodebreakerRaceModal(discord.ui.Modal):
                     )
             except Exception:
                 pass
-
 
 class CodebreakerMatchView(discord.ui.View):
     """Active multiplayer (or solo practice) Four-Digit Codebreaker session."""
@@ -107,11 +104,11 @@ class CodebreakerMatchView(discord.ui.View):
         self.secret_code = generate_secret_code(allow_repeats=allow_repeats)
         self.start_ts = time.time()
         self.end_ts = int(self.start_ts + round_seconds)
-        self.guesses: Dict[int, List[Tuple[str, int, int]]] = {p.id: [] for p in room.players}
-        self.winner: Optional[discord.abc.User] = None
+        self.guesses: dict[int, list[tuple[str, int, int]]] = {p.id: [] for p in room.players}
+        self.winner: discord.abc.User | None = None
         self.finished = False
         self._finished_guard = False  # prevents double-finish races
-        self.timer_task: Optional[asyncio.Task] = None
+        self.timer_task: asyncio.Task | None = None
         self.session_id = f"codebreaker_room:{room.room_id}"
 
     def register_solo_chat_input(self, channel_id: int) -> None:
@@ -482,7 +479,6 @@ class CodebreakerMatchView(discord.ui.View):
             except Exception as e:
                 print(f"[CODEBREAKER] final embed edit failed: {type(e).__name__}: {e}")
 
-
 class CodebreakerFinishedView(discord.ui.View):
     def __init__(self, cog: "Codebreaker", prev_room: MultiplayerRoom):
         super().__init__(timeout=180)
@@ -531,15 +527,16 @@ class CodebreakerFinishedView(discord.ui.View):
     async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal("Codebreaker"))
 
-
 # ---------- PRESERVED 1v1 CLASSIC CHALLENGE MODAL & VIEW ----------
 
 class SetCodeModal(discord.ui.Modal, title="Set the Secret Code"):
-    code = discord.ui.TextInput(
-        label="Enter a 4-digit code (numbers 1-6 only)",
-        placeholder="e.g., 1234",
-        min_length=4,
-        max_length=4,
+    code = discord.ui.Label(
+        text="Enter a 4-digit code (numbers 1-6 only)",
+        component=discord.ui.TextInput(
+            placeholder="e.g., 1234",
+            min_length=4,
+            max_length=4,
+        ),
     )
 
     def __init__(self, cog, challenger, opponent):
@@ -550,7 +547,7 @@ class SetCodeModal(discord.ui.Modal, title="Set the Secret Code"):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            code = self.code.value.strip()
+            code = self.code.component.value.strip()
             if not code.isdigit() or any(c not in "123456" for c in code):
                 return await interaction.response.send_message(
                     "❌ Invalid code! Use only numbers 1-6.", ephemeral=True
@@ -578,12 +575,13 @@ class SetCodeModal(discord.ui.Modal, title="Set the Secret Code"):
             except Exception:
                 pass
 
-
 class GuessModal(discord.ui.Modal, title="Guess the Code"):
-    guess = discord.ui.TextInput(
-        label="Enter your 4-digit guess (1-6)",
-        min_length=4,
-        max_length=4,
+    guess = discord.ui.Label(
+        text="Enter your 4-digit guess (1-6)",
+        component=discord.ui.TextInput(
+            min_length=4,
+            max_length=4,
+        ),
     )
 
     def __init__(self, view):
@@ -597,7 +595,7 @@ class GuessModal(discord.ui.Modal, title="Guess the Code"):
                 return await interaction.response.send_message(
                     "This isn't your game!", ephemeral=True
                 )
-            await self.view.process_guess(interaction, self.guess.value.strip())
+            await self.view.process_guess(interaction, self.guess.component.value.strip())
         except Exception as e:
             print(f"[CODEBREAKER] GuessModal error: {type(e).__name__}: {e}")
             traceback.print_exc()
@@ -609,7 +607,6 @@ class GuessModal(discord.ui.Modal, title="Guess the Code"):
                     )
             except Exception:
                 pass
-
 
 class CodebreakerGameView(discord.ui.View):
     def __init__(self, cog, challenger, opponent, secret_code, channel_id: int = 0):
@@ -623,7 +620,7 @@ class CodebreakerGameView(discord.ui.View):
         self.won = False
         self._ended = False
         self._lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self.session_id = f"cb1v1:{channel_id}:{opponent.id}"
 
     def register_chat_input(self) -> None:
@@ -798,7 +795,6 @@ class CodebreakerGameView(discord.ui.View):
 
         await safe_edit_or_send(interaction, embed=embed, view=self, fallback_message=self.message)
 
-
 class Codebreaker(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -891,7 +887,7 @@ class Codebreaker(commands.Cog):
         except Exception:
             pass
 
-    @app_commands.guild_only()
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.command(
         name="codebreaker",
         description="Start a Four-Digit Codebreaker Multiplayer Room or 1v1 Duel",
@@ -904,7 +900,7 @@ class Codebreaker(commands.Cog):
     async def codebreaker(
         self,
         interaction: discord.Interaction,
-        opponent: Optional[discord.Member] = None,
+        opponent: discord.Member | None = None,
         attempts: int = 10,
         timer_seconds: int = 180,
     ):
@@ -929,7 +925,6 @@ class Codebreaker(commands.Cog):
             round_seconds=timer_seconds,
             min_players=1,
         )
-
 
 async def setup(bot):
     await bot.add_cog(Codebreaker(bot))

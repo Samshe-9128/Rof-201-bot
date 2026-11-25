@@ -5,7 +5,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, timezone
-from typing import List, Optional
 
 from core.config import (
     DEFAULT_TZ_OFFSET, EVENT_CHANNEL_ID, HAVColors,
@@ -15,12 +14,11 @@ from core.database import db
 from core.permissions import ensure_admin, is_admin_interaction
 from core.ui import get_alliance_short, safe_reply_error, PaginatedEmbedView, hav_embed
 
-
 # ==============================================================================
 # MODULE-LEVEL HELPERS
 # ==============================================================================
 
-def _parse_iso_utc(raw_value) -> Optional[datetime]:
+def _parse_iso_utc(raw_value) -> datetime | None:
     if not raw_value:
         return None
     s = str(raw_value).strip()
@@ -37,7 +35,6 @@ def _parse_iso_utc(raw_value) -> Optional[datetime]:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
-
 def _safe_tz_off() -> float:
     try:
         return float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
@@ -45,14 +42,12 @@ def _safe_tz_off() -> float:
         print(f"[EVENTS] tz config read failed: {e}")
         return float(DEFAULT_TZ_OFFSET)
 
-
 def _default_reminder_minutes() -> int:
     try:
         return int(db.get_config("default_reminder_minutes", "10") or 10)
     except Exception as e:
         print(f"[EVENTS] default_reminder_minutes read failed: {e}")
         return 10
-
 
 def _format_reminder(minutes: int) -> str:
     try:
@@ -69,7 +64,6 @@ def _format_reminder(minutes: int) -> str:
         return "24 hours before start"
     return f"{m} minutes before start"
 
-
 def _format_repeat(repeat_days: int) -> str:
     try:
         d = int(repeat_days or 0)
@@ -83,32 +77,29 @@ def _format_repeat(repeat_days: int) -> str:
         return "🔁 Every 7 days (Weekly)"
     return f"🔁 Every {d} days"
 
-
 def _format_announce(announce_enabled) -> str:
     on = int(announce_enabled) if announce_enabled is not None else 1
     return "🔔 ON" if on == 1 else "🔕 OFF (Muted)"
 
-
 def parse_event_datetime(date_str: str, time_str: str,
-                          tz_offset: Optional[float] = None) -> datetime:
+                          tz_offset: float | None = None) -> datetime:
     game_tz = get_game_tz(tz_offset)
     dt = datetime.strptime(
         f"{date_str.strip()} {time_str.strip()}", "%Y-%m-%d %H:%M"
     )
     return dt.replace(tzinfo=game_tz)
 
-
 # >>> MODULE-LEVEL AUTOCOMPLETE (the fix) <<<
 async def event_id_autocomplete(
     interaction: discord.Interaction, current: str
-) -> List[app_commands.Choice[str]]:
+) -> list[app_commands.Choice[str]]:
     try:
         upcoming = db.get_upcoming_events(include_cancelled=False) or []
     except Exception as e:
         print(f"[EVENTS] autocomplete fetch failed: {e}")
         return []
     current_l = (current or "").lower()
-    choices: List[app_commands.Choice[str]] = []
+    choices: list[app_commands.Choice[str]] = []
     for ev in upcoming:
         try:
             eid = str(ev.get("id", ""))
@@ -122,7 +113,6 @@ async def event_id_autocomplete(
             continue
     return choices
 
-
 async def _save_reminder_with_fallback(event_id: str, minutes: int,
                                         base_kwargs: dict) -> bool:
     """Persist event updates including reminder_minutes."""
@@ -133,9 +123,8 @@ async def _save_reminder_with_fallback(event_id: str, minutes: int,
         print(f"[EVENTS] update_event failed: {e}")
         return False
 
-
 def build_event_detail_embed(ev: dict,
-                             title_prefix: Optional[str] = None) -> discord.Embed:
+                             title_prefix: str | None = None) -> discord.Embed:
     if title_prefix is None:
         title_prefix = f"📅 {get_alliance_short()} EVENT DETAILS"
     try:
@@ -182,34 +171,15 @@ def build_event_detail_embed(ev: dict,
             footer_extra=f"Event ID: {ev.get('id', '?') if isinstance(ev, dict) else '?'}",
         )
 
-
 # ==============================================================================
 # MODALS & VIEWS
 # ==============================================================================
 
 class EventCreateOrEditModal(discord.ui.Modal):
-    event_name = discord.ui.TextInput(
-        label="Event Name", placeholder="e.g., Surge / Alliance Brawl",
-        max_length=60, required=True)
-    event_date = discord.ui.TextInput(
-        label="Date (YYYY-MM-DD)", placeholder="e.g., 2026-11-12",
-        min_length=10, max_length=10, required=True)
-    event_time = discord.ui.TextInput(
-        label="Game Time (HH:MM in UTC-2)", placeholder="e.g., 16:00",
-        min_length=4, max_length=5, required=True)
-    reminder_minutes = discord.ui.TextInput(
-        label="Reminder (minutes before start)",
-        placeholder="Leave blank for default (10). Use 0 for no reminder.",
-        max_length=4, required=False)
-    repeat_days = discord.ui.TextInput(
-        label="Repeat Every N Days (optional)",
-        placeholder="Blank or 0 = once, e.g. 2 = every 2 days, 7 = weekly",
-        max_length=3, required=False)
-
-    def __init__(self, cog: "Events", channel_id: Optional[int] = None,
-                 existing_event: Optional[dict] = None,
+    def __init__(self, cog: "Events", channel_id: int | None = None,
+                 existing_event: dict | None = None,
                  duration_minutes: int = 60,
-                 default_repeat_days: Optional[int] = None,
+                 default_repeat_days: int | None = None,
                  announce_enabled: bool = True):
         short = get_alliance_short()
         title = (f"Edit Event ({existing_event.get('id', '?')})"[:45]
@@ -220,11 +190,40 @@ class EventCreateOrEditModal(discord.ui.Modal):
         self.existing_event = existing_event
         self.duration_val = max(1, min(1440, int(duration_minutes or 60)))
         self.announce_enabled = bool(announce_enabled)
+
         try:
             tz_label = format_tz_label(_safe_tz_off())
-            self.event_time.label = f"Game Time (HH:MM in {tz_label})"[:45]
+            time_label = f"Game Time (HH:MM in {tz_label})"[:45]
         except Exception:
-            pass
+            time_label = "Game Time (HH:MM in UTC-2)"
+
+        self.event_name = discord.ui.TextInput(
+            placeholder="e.g., Surge / Alliance Brawl",
+            max_length=60,
+            required=True,
+        )
+        self.event_date = discord.ui.TextInput(
+            placeholder="e.g., 2026-11-12",
+            min_length=10,
+            max_length=10,
+            required=True,
+        )
+        self.event_time = discord.ui.TextInput(
+            placeholder="e.g., 16:00",
+            min_length=4,
+            max_length=5,
+            required=True,
+        )
+        self.reminder_minutes = discord.ui.TextInput(
+            placeholder="Leave blank for default (10). Use 0 for no reminder.",
+            max_length=4,
+            required=False,
+        )
+        self.repeat_days = discord.ui.TextInput(
+            placeholder="Blank or 0 = once, e.g. 2 = every 2 days, 7 = weekly",
+            max_length=3,
+            required=False,
+        )
 
         if existing_event:
             try:
@@ -252,6 +251,12 @@ class EventCreateOrEditModal(discord.ui.Modal):
                     self.repeat_days.default = str(int(default_repeat_days))
             except Exception:
                 pass
+
+        self.add_item(discord.ui.Label(text="Event Name", component=self.event_name))
+        self.add_item(discord.ui.Label(text="Date (YYYY-MM-DD)", component=self.event_date))
+        self.add_item(discord.ui.Label(text=time_label, component=self.event_time))
+        self.add_item(discord.ui.Label(text="Reminder (minutes before start)", component=self.reminder_minutes))
+        self.add_item(discord.ui.Label(text="Repeat Every N Days (optional)", component=self.repeat_days))
 
     async def on_submit(self, interaction: discord.Interaction):
         if not await ensure_admin(interaction):
@@ -446,7 +451,6 @@ class EventCreateOrEditModal(discord.ui.Modal):
         view = EventConfirmationView(self.cog, created["id"])
         await interaction.followup.send(embed=confirm_embed, view=view, ephemeral=True)
 
-
 class EventConfirmationView(discord.ui.View):
     def __init__(self, cog: "Events", event_id: str):
         super().__init__(timeout=300.0)
@@ -523,12 +527,11 @@ class EventConfirmationView(discord.ui.View):
             except Exception:
                 pass
 
-
 class EventPickerSelect(discord.ui.Select):
-    def __init__(self, cog: "Events", events_list: List[dict], action: str):
+    def __init__(self, cog: "Events", events_list: list[dict], action: str):
         self.cog = cog
         self.action = action
-        options: List[discord.SelectOption] = []
+        options: list[discord.SelectOption] = []
         for ev in events_list[:25]:
             try:
                 eid = str(ev.get("id", "?"))
@@ -600,12 +603,10 @@ class EventPickerSelect(discord.ui.Select):
                 f"This cannot be undone.",
                 view=ConfirmDeleteView(eid, ev.get("name", "?")), ephemeral=True)
 
-
 class EventPickerView(discord.ui.View):
-    def __init__(self, cog: "Events", events_list: List[dict], action: str):
+    def __init__(self, cog: "Events", events_list: list[dict], action: str):
         super().__init__(timeout=180)
         self.add_item(EventPickerSelect(cog, events_list, action))
-
 
 class ConfirmDeleteView(discord.ui.View):
     def __init__(self, event_id: str, event_name: str):
@@ -638,7 +639,6 @@ class ConfirmDeleteView(discord.ui.View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="Deletion cancelled.", view=None)
-
 
 # ==============================================================================
 # COG
@@ -766,7 +766,7 @@ class Events(commands.Cog):
         tz_off = _safe_tz_off()
         tz_label = format_tz_label(tz_off)
         per_page = 4
-        pages: List[discord.Embed] = []
+        pages: list[discord.Embed] = []
         for idx in range(0, len(upcoming), per_page):
             chunk = upcoming[idx:idx + per_page]
             embed = hav_embed(
@@ -812,7 +812,7 @@ class Events(commands.Cog):
 
     # ---------- /events & /event COMMAND GROUP (Streamlined) ----------
     event_group = app_commands.Group(
-        guild_only=True,
+        allowed_contexts=app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False),
         name="event",
         description="Create, edit, view, and delete alliance events",
     )
@@ -848,8 +848,8 @@ class Events(commands.Cog):
     async def event_add_cmd(
         self,
         interaction: discord.Interaction,
-        repeat: Optional[int] = None,
-        channel: Optional[discord.TextChannel] = None,
+        repeat: int | None = None,
+        channel: discord.TextChannel | None = None,
         announce: bool = True,
     ):
         if not await ensure_admin(interaction):
@@ -873,7 +873,7 @@ class Events(commands.Cog):
     @app_commands.describe(event_id="The event ID — leave blank to pick from a list")
     @app_commands.autocomplete(event_id=event_id_autocomplete)
     async def event_edit_cmd(self, interaction: discord.Interaction,
-                             event_id: Optional[str] = None):
+                             event_id: str | None = None):
         if not await ensure_admin(interaction):
             return
         if not event_id:
@@ -898,7 +898,7 @@ class Events(commands.Cog):
     @app_commands.describe(event_id="The event ID — leave blank to pick from a list")
     @app_commands.autocomplete(event_id=event_id_autocomplete)
     async def event_view_cmd(self, interaction: discord.Interaction,
-                             event_id: Optional[str] = None):
+                             event_id: str | None = None):
         if not event_id:
             return await self._show_picker(interaction, "view")
         try:
@@ -923,7 +923,7 @@ class Events(commands.Cog):
     @app_commands.describe(event_id="The event ID — leave blank to pick from a list")
     @app_commands.autocomplete(event_id=event_id_autocomplete)
     async def event_delete_cmd(self, interaction: discord.Interaction,
-                               event_id: Optional[str] = None):
+                               event_id: str | None = None):
         if not await ensure_admin(interaction):
             return
         if not event_id:
@@ -941,7 +941,6 @@ class Events(commands.Cog):
             f"⚠️ Permanently delete **{ev.get('name', '?')}** (`{event_id}`)? "
             f"This cannot be undone.",
             view=ConfirmDeleteView(event_id, ev.get("name", "?")), ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Events(bot))

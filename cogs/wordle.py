@@ -6,7 +6,6 @@ import os
 import random
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
 
 import discord
 from discord import app_commands
@@ -35,7 +34,6 @@ DAILY_FILE = os.path.join(BASE_DIR, 'wordle_daily.json')
 GUESS_COOLDOWN_SEC = 0.8
 QUIT_KEYWORDS = {"quit", "stop", "cancel", "give up", "giveup", "end"}
 
-
 # ---------- helpers ----------
 
 def load_json(path, default):
@@ -47,13 +45,11 @@ def load_json(path, default):
             return default
     return default
 
-
 def save_json(path, data):
     tmp_path = f"{path}.tmp"
     with open(tmp_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp_path, path)
-
 
 def load_word_list(path):
     if not os.path.exists(path):
@@ -61,13 +57,11 @@ def load_word_list(path):
     with open(path, 'r', encoding='utf-8') as f:
         return [w.strip().lower() for w in f if len(w.strip()) == 5 and w.strip().isalpha()]
 
-
 def is_authorized(user_id):
     if OWNER_ID and int(user_id) == int(OWNER_ID):
         return True
     # Allow alliance members when wordle_open_to_all is enabled in config
     return db.get_config("wordle_open_to_all", "true").lower() == "true"
-
 
 def evaluate_guess(guess, answer):
     """Wordle scoring with correct repeated-letter handling (case-insensitive)."""
@@ -84,7 +78,6 @@ def evaluate_guess(guess, answer):
             result[i] = YELLOW
             a[a.index(g[i])] = None
     return result
-
 
 # ---------- views ----------
 
@@ -134,7 +127,6 @@ class ShareResultView(discord.ui.View):
     async def report_bug_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal("Wordle"))
 
-
 class WordleGameView(discord.ui.View):
     """Clean popular-bot Wordle controls — guesses are typed directly in chat!"""
 
@@ -144,7 +136,7 @@ class WordleGameView(discord.ui.View):
         self.user_id = user_id
         self.mode = mode
         self.channel_id = channel_id
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
 
     @discord.ui.button(label="Give Up", style=discord.ButtonStyle.danger, emoji="🏳️")
     async def giveup_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -175,7 +167,6 @@ class WordleGameView(discord.ui.View):
             except Exception:
                 pass
 
-
 # ---------- cog ----------
 
 class Wordle(commands.Cog):
@@ -187,10 +178,10 @@ class Wordle(commands.Cog):
         self.stats = db.load_kv_json('wordle_stats', {})
         self.games = db.load_kv_json('wordle_games', {})
         self.daily = db.load_kv_json('wordle_daily', {})
-        self.last_guess: Dict[int, float] = {}
+        self.last_guess: dict[int, float] = {}
         # Active board messages keyed by (channel_id, user_id) -> {"message": Message, "mode": str, "view": View}
-        self.active_boards: Dict[tuple, dict] = {}
-        self._user_locks: Dict[int, asyncio.Lock] = {}
+        self.active_boards: dict[tuple, dict] = {}
+        self._user_locks: dict[int, asyncio.Lock] = {}
 
         print(f"[WORDLE] Loaded {len(self.answers)} answers, {len(self.valid_words)} valid words")
 
@@ -213,7 +204,7 @@ class Wordle(commands.Cog):
         channel_id: int,
         user_id: int,
         mode: str,
-        board_message: Optional[discord.Message],
+        board_message: discord.Message | None,
         view: WordleGameView,
     ) -> None:
         async def _on_chat_message(message: discord.Message) -> bool:
@@ -481,7 +472,7 @@ class Wordle(commands.Cog):
 
         # Send as a standard (non-ephemeral) message so DMs and Server Channels behave 100% identically
         # and the board can be updated live in-place whenever the player types a guess in chat!
-        board_msg: Optional[discord.Message] = None
+        board_msg: discord.Message | None = None
         try:
             if interaction.response.is_done():
                 board_msg = await interaction.followup.send(embed=embed, view=view, wait=True)
@@ -785,7 +776,6 @@ class Wordle(commands.Cog):
             await interaction.response.send_message("You are not authorized! 🔒", ephemeral=True)
             return
         await self.start_game(interaction, mode, force_new=(mode == "practice"))
-
 
 async def setup(bot):
     await bot.add_cog(Wordle(bot))

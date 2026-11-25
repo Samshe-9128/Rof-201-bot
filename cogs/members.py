@@ -4,7 +4,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone
-from typing import Optional
 
 from core.config import (
     DEFAULT_TZ_OFFSET,
@@ -20,7 +19,6 @@ from core.rooms import room_manager
 from core.permissions import ensure_admin
 from core.ui import PaginatedEmbedView, get_alliance_name, get_alliance_short, safe_reply_error, hav_embed
 
-
 # ==============================================================================
 # HELPERS
 # ==============================================================================
@@ -32,7 +30,6 @@ def _safe_tz_off() -> float:
         print(f"[MEMBERS] tz config read failed: {e}")
         return float(DEFAULT_TZ_OFFSET)
 
-
 def _safe_config_int(key: str, default: int = 0) -> int:
     """fix A: DB read + int cast in one guarded call."""
     try:
@@ -41,8 +38,7 @@ def _safe_config_int(key: str, default: int = 0) -> int:
         print(f"[MEMBERS] config '{key}' read/cast failed: {e}")
         return int(default)
 
-
-def _parse_iso_utc(raw_value) -> Optional[datetime]:
+def _parse_iso_utc(raw_value) -> datetime | None:
     """fix J: normalize trailing `Z` and return None on malformed input."""
     if not raw_value:
         return None
@@ -60,7 +56,6 @@ def _parse_iso_utc(raw_value) -> Optional[datetime]:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
-
 def _safe_rules_text(fallback: str = "*No rules have been set yet.*") -> str:
     """fix B/G: never let rules rendering crash a caller."""
     try:
@@ -69,39 +64,35 @@ def _safe_rules_text(fallback: str = "*No rules have been set yet.*") -> str:
         print(f"[MEMBERS] get_formatted_rules failed: {e}")
         return fallback
 
-
 def load_rules() -> str:
     # fix I: safe accessor for legacy callers.
     return _safe_rules_text()
 
-
 def save_rules(text: str, actor_id: int = 0):
     # fix I: intentionally propagates — caller must handle.
     db.replace_all_rules(text, actor_id=actor_id)
-
 
 # ==============================================================================
 # MODAL
 # ==============================================================================
 
 class RulesModal(discord.ui.Modal):
-    rules_input = discord.ui.TextInput(
-        label="Enter the alliance rules (one per line):",
-        style=discord.TextStyle.paragraph,
-        placeholder="Type your rules here, one rule per line.",
-        min_length=5,
-        max_length=4000,
-        required=True,
-    )
-
     def __init__(self):
         super().__init__(title=f"Set {get_alliance_short()} Alliance Rules"[:45])
-        # fix D: guarded prefill.
         try:
-            self.rules_input.default = db.get_formatted_rules()
+            default_rules = db.get_formatted_rules()
         except Exception as e:
             print(f"[MEMBERS] RulesModal prefill failed: {e}")
-            self.rules_input.default = ""
+            default_rules = ""
+        self.rules_input = discord.ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            placeholder="Type your rules here, one rule per line.",
+            default=default_rules,
+            min_length=5,
+            max_length=4000,
+            required=True,
+        )
+        self.add_item(discord.ui.Label(text="Enter the alliance rules (one per line):", component=self.rules_input))
 
     async def on_submit(self, interaction: discord.Interaction):
         # fix E: guard the whole flow so the user always gets a response.
@@ -143,7 +134,6 @@ class RulesModal(discord.ui.Modal):
                     )
             except Exception:
                 pass
-
 
 # ==============================================================================
 # COG
@@ -383,7 +373,7 @@ class Members(commands.Cog):
     # ---------- /rules COMMAND GROUP ----------
 
     rules_group = app_commands.Group(
-        guild_only=True,
+        allowed_contexts=app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False),
         name="rules", description="View and manage official Alliance rules"
     )
 
@@ -464,8 +454,8 @@ class Members(commands.Cog):
     async def rules_edit_cmd(
         self,
         interaction: discord.Interaction,
-        rule_number: Optional[int] = None,
-        new_text: Optional[str] = None,
+        rule_number: int | None = None,
+        new_text: str | None = None,
     ):
         if not await ensure_admin(interaction):
             return
@@ -542,8 +532,6 @@ class Members(commands.Cog):
             color=HAVColors.WARNING,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Members(bot))

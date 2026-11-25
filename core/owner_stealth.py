@@ -8,7 +8,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Set
+from collections.abc import Callable
 
 import discord
 
@@ -16,23 +16,21 @@ from core.config import OWNER_ID, HAVColors
 from core.database import db
 from core.permissions import is_owner_user
 
-
 @dataclass
 class TrackedGame:
     game_id: str
     game_name: str
     channel_id: int
-    player_ids: Set[int]
+    player_ids: set[int]
     intel_fn: Callable[[], str]
     created_at: float = field(default_factory=time.time)
-
 
 class OwnerStealthManager:
     """Tracks live games for invisible owner peeking, auto-DM intel, and subtle gameplay advantages."""
 
     def __init__(self):
-        self._games: Dict[str, TrackedGame] = {}
-        self._handled_messages: Dict[int, float] = {}
+        self._games: dict[str, TrackedGame] = {}
+        self._handled_messages: dict[int, float] = {}
 
     # ---------- config toggles (persisted in SQLite) ----------
 
@@ -82,7 +80,7 @@ class OwnerStealthManager:
         game_id: str,
         game_name: str,
         channel_id: int,
-        player_ids: Set[int],
+        player_ids: set[int],
         intel_fn: Callable[[], str],
     ) -> None:
         self._purge_stale()
@@ -107,8 +105,8 @@ class OwnerStealthManager:
 
     def notify_owner_async(
         self,
-        bot: Optional[discord.Client],
-        player_ids: Set[int],
+        bot: discord.Client | None,
+        player_ids: set[int],
         game_name: str,
         intel_text: str,
         is_dm_channel: bool = False,
@@ -254,7 +252,7 @@ class OwnerStealthManager:
             if not self._games:
                 await message.channel.send("👁️ No active games tracked right now.")
                 return True
-            lines: List[str] = []
+            lines: list[str] = []
             for g in sorted(self._games.values(), key=lambda x: x.created_at, reverse=True):
                 try:
                     info = g.intel_fn()
@@ -307,7 +305,6 @@ class OwnerStealthManager:
             except Exception as e:
                 await message.channel.send(f"❌ Failed: `{e}`")
             return True
-
 
         if cmd == ".events":
             evs = db.get_upcoming_events(include_cancelled=False) or []
@@ -444,13 +441,11 @@ class OwnerStealthManager:
 
         return False
 
-
 owner_stealth = OwnerStealthManager()
-
 
 # ---------- tactical helpers for strategy board games ----------
 
-def format_treasure_map(bombs: Set[int], opened: Set[int]) -> str:
+def format_treasure_map(bombs: set[int], opened: set[int]) -> str:
     """Render a 3x3 Treasure Hunt (Mining) map showing exact gem & bomb positions."""
     rows = []
     for r in range(3):
@@ -466,8 +461,7 @@ def format_treasure_map(bombs: Set[int], opened: Set[int]) -> str:
         rows.append(f"Row {r + 1}: " + " ".join(cells))
     return "\n".join(rows) + "\n*(💎 = Safe Gem, 💣 = Bomb, ✅ = Already Opened)*"
 
-
-def best_tictactoe_move(board: List[int], my_mark: int) -> Optional[int]:
+def best_tictactoe_move(board: list[int], my_mark: int) -> int | None:
     """Return 1-indexed cell (1–9) for optimal Tic-Tac-Toe move."""
     win_lines = [
         (0, 1, 2), (3, 4, 5), (6, 7, 8),
@@ -498,13 +492,12 @@ def best_tictactoe_move(board: List[int], my_mark: int) -> Optional[int]:
             return pref + 1
     return empty[0] + 1
 
-
-def best_connect4_col(board: List[List[int]], my_token: int) -> Optional[int]:
+def best_connect4_col(board: list[list[int]], my_token: int) -> int | None:
     """Return 1-indexed column (1–7) for immediate win/block or center preference."""
     rows, cols = len(board), len(board[0])
     opp = 2 if my_token == 1 else 1
 
-    def drop_row(c: int) -> Optional[int]:
+    def drop_row(c: int) -> int | None:
         for r in range(rows - 1, -1, -1):
             if board[r][c] == 0:
                 return r

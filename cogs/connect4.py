@@ -1,6 +1,5 @@
 # cogs/connect4.py
 import asyncio
-from typing import List, Optional
 
 import discord
 from discord import app_commands
@@ -20,7 +19,6 @@ COL_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", 
 ROWS = 6
 COLS = 7
 
-
 class Connect4View(discord.ui.View):
     def __init__(self, cog: "Connect4", room: MultiplayerRoom):
         super().__init__(timeout=300.0)
@@ -28,7 +26,7 @@ class Connect4View(discord.ui.View):
         self.room = room
         self.p1 = room.players[0]
         self.p2 = room.players[1]
-        self.board: List[List[int]] = [[0] * COLS for _ in range(ROWS)]
+        self.board: list[list[int]] = [[0] * COLS for _ in range(ROWS)]
         self.turn = 1  # 1 = p1, 2 = p2
         self.moves = 0
         self.finished = False
@@ -177,7 +175,7 @@ class Connect4View(discord.ui.View):
                     )
 
                 # Find the lowest empty row in the column.
-                target_row: Optional[int] = None
+                target_row: int | None = None
                 for r in range(ROWS - 1, -1, -1):
                     if self.board[r][col] == 0:
                         target_row = r
@@ -315,7 +313,6 @@ class Connect4View(discord.ui.View):
             except Exception as e:
                 print(f"[CONNECT4] timeout edit failed: {e}")
 
-
 class Connect4(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -376,11 +373,10 @@ class Connect4(commands.Cog):
         except Exception:
             pass
 
-    @app_commands.guild_only()
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.command(name="connect4", description="Start a 2-player Connect 4 duel")
     async def connect4(self, interaction: discord.Interaction):
         await self.open_connect4_room(interaction)
-
 
 async def setup(bot):
     await bot.add_cog(Connect4(bot))

@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.config import BASE_DIR, DATA_DIR, DEFAULT_TZ_OFFSET, EVENT_CHANNEL_ID, WELCOME_CHANNEL_ID, RULES_CHANNEL_ID, MONGO_URI, MONGO_DB_NAME
 
@@ -30,7 +30,6 @@ DEFAULT_RULES_LIST = [
 
 from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES
 
-
 class _PooledConn:
     """Thin proxy around a persistent SQLite connection so existing conn.close() calls keep the pool warm."""
 
@@ -52,7 +51,6 @@ class _PooledConn:
     def __getattr__(self, name: str):
         return getattr(self._conn, name)
 
-
 class Database:
     """Thread-safe SQLite database with persistent WAL connection pooling, cloud/FUSE resilience, legacy JSON auto-migration, and online backup support."""
 
@@ -62,8 +60,8 @@ class Database:
         self.target_db_path = db_path
         self.db_path = self._resolve_working_db_path(db_path)
         self._lock = threading.RLock()
-        self._conn: Optional[sqlite3.Connection] = None
-        self._config_cache: Dict[str, str] = {}
+        self._conn: sqlite3.Connection | None = None
+        self._config_cache: dict[str, str] = {}
         self._init_db()
         self._migrate_legacy_json()
         self._load_config_cache()
@@ -487,7 +485,7 @@ class Database:
             self._mirror_if_needed()
             return res
 
-    def get_admins(self) -> List[Dict[str, Any]]:
+    def get_admins(self) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()
             try:
@@ -496,7 +494,7 @@ class Database:
             finally:
                 conn.close()
 
-    def is_db_admin(self, user_id: int, role_ids: List[int] = None) -> bool:
+    def is_db_admin(self, user_id: int, role_ids: list[int] = None) -> bool:
         with self._lock:
             conn = self._connect()
             try:
@@ -530,7 +528,7 @@ class Database:
             finally:
                 conn.close()
 
-    def get_audit_logs(self, limit: int = 15) -> List[Dict[str, Any]]:
+    def get_audit_logs(self, limit: int = 15) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()
             try:
@@ -551,7 +549,7 @@ class Database:
         points_earned: int = 0,
         attempts: int = 0,
         duration_sec: float = 0.0,
-        reaction_ms: Optional[int] = None,
+        reaction_ms: int | None = None,
         mode: str = "single",
         username: str = "",
     ) -> int:
@@ -656,7 +654,7 @@ class Database:
         self._mirror_if_needed()
         return int(new_pts)
 
-    def get_player_profile(self, user_id: int) -> Dict[str, Any]:
+    def get_player_profile(self, user_id: int) -> dict[str, Any]:
         uid = int(user_id)
         with self._lock:
             conn = self._connect()
@@ -712,7 +710,7 @@ class Database:
             finally:
                 conn.close()
 
-    def get_player_history(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_player_history(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()
             try:
@@ -727,9 +725,9 @@ class Database:
     def get_leaderboard(
         self,
         scope: str = "overall",
-        game_name: Optional[str] = None,
+        game_name: str | None = None,
         limit: int = 10,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()
             try:
@@ -796,7 +794,6 @@ class Database:
                 conn.close()
         self._mirror_if_needed()
 
-
     def create_event(
         self,
         event_id: str,
@@ -809,7 +806,7 @@ class Database:
         reminder_minutes: int = 10,
         repeat_days: int = 0,
         announce_enabled: int = 1,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         utc_iso = start_time_utc.astimezone(timezone.utc).isoformat()
         rep = max(0, min(365, int(repeat_days or 0)))
         ann = 1 if int(announce_enabled) else 0
@@ -844,15 +841,15 @@ class Database:
     def update_event(
         self,
         event_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        start_time_utc: Optional[datetime] = None,
-        duration_minutes: Optional[int] = None,
-        channel_id: Optional[int] = None,
-        reminder_minutes: Optional[int] = None,
-        repeat_days: Optional[int] = None,
-        announce_enabled: Optional[int] = None,
-    ) -> Optional[Dict[str, Any]]:
+        name: str | None = None,
+        description: str | None = None,
+        start_time_utc: datetime | None = None,
+        duration_minutes: int | None = None,
+        channel_id: int | None = None,
+        reminder_minutes: int | None = None,
+        repeat_days: int | None = None,
+        announce_enabled: int | None = None,
+    ) -> dict[str, Any] | None:
         ev = self.get_event(event_id)
         if not ev:
             return None
@@ -897,7 +894,7 @@ class Database:
         self._mirror_if_needed()
         return self.get_event(event_id)
 
-    def cancel_or_delete_event(self, event_id: str, delete_permanently: bool = False) -> Optional[Dict[str, Any]]:
+    def cancel_or_delete_event(self, event_id: str, delete_permanently: bool = False) -> dict[str, Any] | None:
         ev = self.get_event(event_id)
         if not ev:
             return None
@@ -917,7 +914,7 @@ class Database:
         self._mirror_if_needed()
         return ev
 
-    def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+    def get_event(self, event_id: str) -> dict[str, Any] | None:
         with self._lock:
             conn = self._connect()
             try:
@@ -926,7 +923,7 @@ class Database:
             finally:
                 conn.close()
 
-    def get_upcoming_events(self, include_cancelled: bool = False) -> List[Dict[str, Any]]:
+    def get_upcoming_events(self, include_cancelled: bool = False) -> list[dict[str, Any]]:
         now_iso = datetime.now(timezone.utc).isoformat()
         with self._lock:
             conn = self._connect()
@@ -945,7 +942,7 @@ class Database:
             finally:
                 conn.close()
 
-    def get_due_reminders(self) -> List[Dict[str, Any]]:
+    def get_due_reminders(self) -> list[dict[str, Any]]:
         now_utc = datetime.now(timezone.utc)
         due = []
         mutated = False
@@ -997,13 +994,13 @@ class Database:
                 self._mirror_if_needed()
         return due
 
-    def set_event_announce(self, event_id: str, enabled: bool) -> Optional[Dict[str, Any]]:
+    def set_event_announce(self, event_id: str, enabled: bool) -> dict[str, Any] | None:
         return self.update_event(event_id, announce_enabled=(1 if enabled else 0))
 
-    def set_event_repeat(self, event_id: str, repeat_days: int) -> Optional[Dict[str, Any]]:
+    def set_event_repeat(self, event_id: str, repeat_days: int) -> dict[str, Any] | None:
         return self.update_event(event_id, repeat_days=max(0, min(365, int(repeat_days))))
 
-    def get_all_config(self) -> Dict[str, str]:
+    def get_all_config(self) -> dict[str, str]:
         with self._lock:
             return dict(sorted(self._config_cache.items()))
 
@@ -1046,8 +1043,7 @@ class Database:
                 conn.close()
         self._mirror_if_needed()
 
-
-    def get_rules_list(self) -> List[Dict[str, Any]]:
+    def get_rules_list(self) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()
             try:
@@ -1132,7 +1128,6 @@ class Database:
                 conn.close()
         self._mirror_if_needed()
 
-
     def upsert_knowledge(
         self,
         key: str,
@@ -1141,7 +1136,7 @@ class Database:
         content: str,
         keywords: str = "",
         actor_id: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         clean_key = key.strip().lower().replace(" ", "_")
         with self._lock:
             conn = self._connect()
@@ -1181,7 +1176,7 @@ class Database:
             self._mirror_if_needed()
             return res
 
-    def list_knowledge(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_knowledge(self, category: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()
             try:
@@ -1196,7 +1191,7 @@ class Database:
             finally:
                 conn.close()
 
-    def get_knowledge(self, key: str) -> Optional[Dict[str, Any]]:
+    def get_knowledge(self, key: str) -> dict[str, Any] | None:
         clean_key = key.strip().lower().replace(" ", "_")
         with self._lock:
             conn = self._connect()
@@ -1237,12 +1232,10 @@ class Database:
             self._mirror_if_needed()
         return dest
 
-
 def _build_db():
     if MONGO_URI:
         from core.mongo_database import MongoDatabase
         return MongoDatabase(MONGO_URI, db_name=MONGO_DB_NAME)
     return Database()
-
 
 db = _build_db()

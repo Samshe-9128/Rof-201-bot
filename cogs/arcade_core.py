@@ -1,6 +1,5 @@
 # cogs/arcade_core.py
 import traceback
-from typing import Optional
 
 import discord
 from discord import app_commands
@@ -11,7 +10,6 @@ from core.database import db
 from core.permissions import ensure_session_player
 from core.ui import get_alliance_short, hav_embed
 
-
 class LeaderboardFilterView(discord.ui.View):
     """Interactive Leaderboard selector for Overall, Weekly, and Individual Games."""
 
@@ -20,7 +18,7 @@ class LeaderboardFilterView(discord.ui.View):
         cog: "ArcadeCore",
         user_id: int,
         scope: str = "overall",
-        game_name: Optional[str] = None,
+        game_name: str | None = None,
     ):
         super().__init__(timeout=180.0)
         self.cog = cog
@@ -90,9 +88,6 @@ class LeaderboardFilterView(discord.ui.View):
         except Exception as e:
             print(f"[ARCADE] leaderboard edit failed: {e}")
 
-
-
-
 class ProfileView(discord.ui.View):
     """Interactive 1-click Match History button attached to /profile."""
 
@@ -134,7 +129,6 @@ class ProfileView(discord.ui.View):
             color=HAVColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 class ArcadeCore(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -307,7 +301,7 @@ class ArcadeCore(commands.Cog):
 
     def _resolve_display_name(
         self,
-        guild: Optional[discord.Guild],
+        guild: discord.Guild | None,
         user_id: int,
         fallback_name: str = "",
     ) -> str:
@@ -334,9 +328,9 @@ class ArcadeCore(commands.Cog):
 
     def build_leaderboard_embed(
         self,
-        guild: Optional[discord.Guild],
+        guild: discord.Guild | None,
         scope: str = "overall",
-        game_name: Optional[str] = None,
+        game_name: str | None = None,
     ) -> discord.Embed:
         # fix A: DB hiccup must not kill the command.
         try:
@@ -403,7 +397,7 @@ class ArcadeCore(commands.Cog):
         self,
         interaction: discord.Interaction,
         scope: str = "overall",
-        game_name: Optional[str] = None,
+        game_name: str | None = None,
         ephemeral: bool = False,
     ):
         try:
@@ -441,7 +435,7 @@ class ArcadeCore(commands.Cog):
     async def profile_cmd(
         self,
         interaction: discord.Interaction,
-        member: Optional[discord.User] = None,
+        member: discord.User | None = None,
     ):
         target = member or interaction.user
         await self.send_profile_embed(interaction, target, ephemeral=False)
@@ -464,7 +458,6 @@ class ArcadeCore(commands.Cog):
         scope: str = "overall",
     ):
         await self.send_leaderboard_interactive(interaction, scope=scope, ephemeral=False)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ArcadeCore(bot))

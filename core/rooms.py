@@ -4,10 +4,9 @@ import random
 import string
 import time
 import discord
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 from core.config import HAVColors
 from core.ui import get_alliance_short, hav_embed
-
 
 class MultiplayerRoom:
     """Represents a single multiplayer game session with atomic lock and full player lifecycle."""
@@ -20,7 +19,7 @@ class MultiplayerRoom:
         host: discord.abc.User,
         min_players: int = 2,
         max_players: int = 6,
-        config: Optional[ dict ] = None,
+        config:  dict  | None = None,
     ):
         self.room_id = room_id
         self.game_key = game_key
@@ -29,23 +28,22 @@ class MultiplayerRoom:
         self.min_players = min_players
         self.max_players = max_players
         self.config = config or {}
-        self.players: List[discord.abc.User] = [host]
+        self.players: list[discord.abc.User] = [host]
         self.status = "waiting"  # 'waiting', 'active', 'finished', 'closed'
         self.created_at = time.time()
         self.lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
 
     def has_player(self, user_id: int) -> bool:
         return any(p.id == user_id for p in self.players)
-
 
 class RoomManager:
     """Central registry preventing duplicate session participation and managing active rooms."""
 
     def __init__(self):
-        self.rooms: Dict[str, MultiplayerRoom] = {}
-        self.single_player_sessions: Dict[str, set] = {}  # game_key -> set of user_ids
-        self.active_solo_views: Dict[tuple, discord.ui.View] = {}  # (user_id, game_key) -> active View
+        self.rooms: dict[str, MultiplayerRoom] = {}
+        self.single_player_sessions: dict[str, set] = {}  # game_key -> set of user_ids
+        self.active_solo_views: dict[tuple, discord.ui.View] = {}  # (user_id, game_key) -> active View
 
     def generate_room_id(self) -> str:
         raw_tag = "".join(ch for ch in get_alliance_short().upper() if ch.isalnum())[:6] or "ALLIANCE"
@@ -66,7 +64,7 @@ class RoomManager:
                 room.status = "closed"
                 self.rooms.pop(rid, None)
 
-    def get_player_active_room(self, user_id: int, game_key: Optional[str] = None) -> Optional[MultiplayerRoom]:
+    def get_player_active_room(self, user_id: int, game_key: str | None = None) -> MultiplayerRoom | None:
         self.purge_stale_rooms()
         for room in list(self.rooms.values()):
             if room.status in ("waiting", "active"):
@@ -86,7 +84,7 @@ class RoomManager:
         if game_key in self.single_player_sessions:
             self.single_player_sessions[game_key].discard(user_id)
 
-    def register_solo_view(self, user_id: int, game_key: str, view: discord.ui.View) -> Optional[discord.ui.View]:
+    def register_solo_view(self, user_id: int, game_key: str, view: discord.ui.View) -> discord.ui.View | None:
         """Register an active solo game view, cleanly cancelling any previous active session of the same game."""
         key = (user_id, game_key)
         old = self.active_solo_views.get(key)
@@ -111,7 +109,7 @@ class RoomManager:
         self.active_solo_views[key] = view
         return old
 
-    def unregister_solo_view(self, user_id: int, game_key: str, view: Optional[discord.ui.View] = None) -> None:
+    def unregister_solo_view(self, user_id: int, game_key: str, view: discord.ui.View | None = None) -> None:
         key = (user_id, game_key)
         cur = self.active_solo_views.get(key)
         if cur is not None and (view is None or cur is view):
@@ -151,7 +149,7 @@ class RoomManager:
         host: discord.abc.User,
         min_players: int = 2,
         max_players: int = 6,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> MultiplayerRoom:
         rid = self.generate_room_id()
         room = MultiplayerRoom(
@@ -171,13 +169,11 @@ class RoomManager:
         if room:
             room.status = "closed"
 
-    def list_active_rooms(self) -> List[MultiplayerRoom]:
+    def list_active_rooms(self) -> list[MultiplayerRoom]:
         self.purge_stale_rooms()
         return list(self.rooms.values())
 
-
 room_manager = RoomManager()
-
 
 class RoomLobbyView(discord.ui.View):
     """Consistent Part 3.1 Multiplayer Room Invitation & Lobby UI."""

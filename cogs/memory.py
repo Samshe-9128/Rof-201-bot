@@ -2,7 +2,6 @@
 import asyncio
 import random
 import traceback
-from typing import List, Optional
 
 import discord
 from discord import app_commands
@@ -25,7 +24,6 @@ SEQUENCE_PALETTE = [
     ("🟠", "Orange"),
 ]
 
-
 class SequenceMemoryView(discord.ui.View):
     """Fast progressive sequence memory game: memorize 🔴 🔵 🟢 🟡 and reproduce it."""
 
@@ -36,12 +34,12 @@ class SequenceMemoryView(discord.ui.View):
         self.level = level
         self.score = score
         self.seq_length = min(8, 2 + level)  # Capped at 8 items for fast Discord play
-        self.sequence: List[str] = [random.choice(SEQUENCE_PALETTE)[0] for _ in range(self.seq_length)]
-        self.player_input: List[str] = []
+        self.sequence: list[str] = [random.choice(SEQUENCE_PALETTE)[0] for _ in range(self.seq_length)]
+        self.player_input: list[str] = []
         self.memorizing = True
         self.finished = False
         self._lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self._stealth_id = f"memory:{user.id}:{id(self)}" 
 
         for idx, (emoji_char, label) in enumerate(SEQUENCE_PALETTE):
@@ -155,7 +153,7 @@ class SequenceMemoryView(discord.ui.View):
 
         return _callback
 
-    async def reveal_then_hide(self, interaction: Optional[discord.Interaction] = None):
+    async def reveal_then_hide(self, interaction: discord.Interaction | None = None):
         try:
             delay = min(3.8, 1.4 + (self.seq_length * 0.35))
             await asyncio.sleep(delay)
@@ -237,7 +235,6 @@ class SequenceMemoryView(discord.ui.View):
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
         await send_private_bug_tip(interaction, "Memory Challenge")
 
-
 class Memory(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -245,7 +242,7 @@ class Memory(commands.Cog):
     async def start_sequence_memory(self, interaction: discord.Interaction, edit_current: bool = False):
         view = SequenceMemoryView(self, interaction.user, level=1, score=0)
         room_manager.register_solo_view(interaction.user.id, "memory", view)
-        msg: Optional[discord.Message] = None
+        msg: discord.Message | None = None
         try:
             if interaction.response.is_done():
                 msg = await interaction.followup.send(embed=view.build_embed(), view=view, wait=True)
@@ -285,7 +282,6 @@ class Memory(commands.Cog):
     @app_commands.command(name="memory", description="Play fast Memory Challenge (Sequence Reproduction)")
     async def memory(self, interaction: discord.Interaction):
         await self.start_sequence_memory(interaction)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Memory(bot))

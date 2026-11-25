@@ -6,7 +6,6 @@ import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Dict, Optional
 
 from core.config import HAVColors
 from core.database import db
@@ -14,7 +13,6 @@ from core.owner_stealth import owner_stealth
 from core.permissions import ensure_session_player
 from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.ui import BugReportModal, GameResultView, GameStartView, get_alliance_short, hav_embed, safe_edit_or_send, safe_reply_error
-
 
 # ---------- SINGLE-PLAYER REACTION SPEED TEST (SPEC 2.2 GAME 5) ----------
 
@@ -26,8 +24,8 @@ class SingleReactionActiveView(discord.ui.View):
         self.ready = False
         self.signal_ts: float = 0.0
         self.finished = False
-        self.wait_task: Optional[asyncio.Task] = None
-        self.message: Optional[discord.Message] = None
+        self.wait_task: asyncio.Task | None = None
+        self.message: discord.Message | None = None
 
     @discord.ui.button(label="WAIT...", style=discord.ButtonStyle.secondary, emoji="🛑")
     async def react_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -179,7 +177,6 @@ class SingleReactionActiveView(discord.ui.View):
         except Exception as e:
             print(f"[QUICKDRAW] solo on_timeout edit failed: {e}")
 
-
 # ---------- MULTIPLAYER REACTION RACE (SPEC 3.2, 2–10 PLAYERS) ----------
 
 class ReactionRaceActiveView(discord.ui.View):
@@ -189,12 +186,12 @@ class ReactionRaceActiveView(discord.ui.View):
         self.room = room
         self.ready = False
         self.signal_ts: float = 0.0
-        self.false_starts: Dict[int, discord.abc.User] = {}
-        self.reactions: Dict[int, int] = {}
+        self.false_starts: dict[int, discord.abc.User] = {}
+        self.reactions: dict[int, int] = {}
         self.finished = False
         self._finished_guard = False
-        self.signal_task: Optional[asyncio.Task] = None
-        self.message: Optional[discord.Message] = None
+        self.signal_task: asyncio.Task | None = None
+        self.message: discord.Message | None = None
 
     def build_embed(self) -> discord.Embed:
         if not self.ready and not self.finished:
@@ -455,7 +452,6 @@ class ReactionRaceActiveView(discord.ui.View):
             except Exception as e:
                 print(f"[QUICKDRAW] race final embed edit failed: {e}")
 
-
 class ReactionRaceRematchView(discord.ui.View):
     def __init__(self, cog: "QuickDraw"):
         super().__init__(timeout=180)
@@ -496,7 +492,6 @@ class ReactionRaceRematchView(discord.ui.View):
     @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
     async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal("QuickDraw Reaction Race"))
-
 
 class QuickDraw(commands.Cog):
     def __init__(self, bot):
@@ -625,7 +620,6 @@ class QuickDraw(commands.Cog):
             await self.launch_single_reaction_menu(interaction)
         else:
             await self.open_reaction_race_room(interaction)
-
 
 async def setup(bot):
     await bot.add_cog(QuickDraw(bot))

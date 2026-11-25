@@ -2,29 +2,25 @@
 import asyncio
 import traceback
 import discord
-from typing import Callable, List, Optional
+from collections.abc import Callable
 from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, OWNER_ID, HAVColors
 from core.permissions import ensure_session_player
-
 
 def get_alliance_short() -> str:
     return BRAND_SHORT
 
-
 def get_alliance_name() -> str:
     return BRAND_NAME
 
-
 def get_alliance_footer() -> str:
     return BRAND_FOOTER
-
 
 def hav_embed(
     title: str,
     description: str = "",
     color: int = HAVColors.PRIMARY,
     footer_extra: str = "",
-    thumbnail_url: Optional[str] = None,
+    thumbnail_url: str | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=color)
     base_footer = get_alliance_footer()
@@ -34,22 +30,22 @@ def hav_embed(
         embed.set_thumbnail(url=thumbnail_url)
     return embed
 
-
 def get_owner_contact_line() -> str:
     """Return a clean owner-contact line tagging OWNER_ID (intended for private/ephemeral messages)."""
     if OWNER_ID:
         return f"🐛 *Found a bug or error in me? Contact the owner: <@{OWNER_ID}>*"
     return "🐛 *Found a bug or error in me? Please contact the bot owner.*"
 
-
 class BugReportModal(discord.ui.Modal, title="🐛 Report a Bug to the Bot Owner"):
-    details = discord.ui.TextInput(
-        label="What bug or error did you find?",
-        style=discord.TextStyle.paragraph,
-        placeholder="Describe what happened (only you and the bot owner will see this)...",
-        min_length=3,
-        max_length=1000,
-        required=True,
+    details = discord.ui.Label(
+        text="What bug or error did you find?",
+        component=discord.ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            placeholder="Describe what happened (only you and the bot owner will see this)...",
+            min_length=3,
+            max_length=1000,
+            required=True,
+        ),
     )
 
     def __init__(self, context_label: str = "HAV Bot"):
@@ -57,7 +53,7 @@ class BugReportModal(discord.ui.Modal, title="🐛 Report a Bug to the Bot Owner
         self.context_label = context_label
 
     async def on_submit(self, interaction: discord.Interaction):
-        report_text = (self.details.value or "").strip()
+        report_text = (self.details.component.value or "").strip()
         owner_tag = f"<@{OWNER_ID}>" if OWNER_ID else "the bot owner"
 
         # Privately DM the bot owner (only reporter + owner see this; never posted publicly)
@@ -114,7 +110,6 @@ class BugReportModal(discord.ui.Modal, title="🐛 Report a Bug to the Bot Owner
             except Exception:
                 pass
 
-
 class BugReportPromptView(discord.ui.View):
     """Lightweight private button so a player can send a bug report directly to the Owner."""
 
@@ -126,9 +121,8 @@ class BugReportPromptView(discord.ui.View):
     async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal(self.context_label))
 
-
 async def send_private_bug_tip(
-    interaction: Optional[discord.Interaction],
+    interaction: discord.Interaction | None,
     context_label: str = "Game Session",
 ) -> None:
     """
@@ -151,9 +145,8 @@ async def send_private_bug_tip(
     except Exception:
         pass
 
-
 async def safe_reply_error(
-    interaction: Optional[discord.Interaction],
+    interaction: discord.Interaction | None,
     message: str = "⚠️ Something went wrong while running that action. Please try again.",
 ) -> None:
     """Always send a visible ephemeral error (with private owner contact tag) so Discord never hangs."""
@@ -172,8 +165,7 @@ async def safe_reply_error(
     except Exception:
         pass
 
-
-async def safe_defer(interaction: Optional[discord.Interaction], ephemeral: bool = False) -> None:
+async def safe_defer(interaction: discord.Interaction | None, ephemeral: bool = False) -> None:
     """Safely acknowledge an interaction if it hasn't been responded to yet."""
     if interaction is None:
         return
@@ -183,16 +175,15 @@ async def safe_defer(interaction: Optional[discord.Interaction], ephemeral: bool
     except Exception:
         pass
 
-
 async def safe_edit_or_send(
-    interaction: Optional[discord.Interaction],
+    interaction: discord.Interaction | None,
     *,
-    embed: Optional[discord.Embed] = None,
-    view: Optional[discord.ui.View] = None,
-    content: Optional[str] = None,
+    embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
+    content: str | None = None,
     ephemeral: bool = False,
-    fallback_message: Optional[discord.Message] = None,
-) -> Optional[discord.Message]:
+    fallback_message: discord.Message | None = None,
+) -> discord.Message | None:
     """
     Reliably update an interaction message or send a fresh one without ever leaving
     the interaction unacknowledged ('The application did not respond').
@@ -239,7 +230,6 @@ async def safe_edit_or_send(
             pass
     return None
 
-
 class GameStartView(discord.ui.View):
     """Standardized Part 4.1 Game Start Screen with optional difficulty selector, Start, How to Play, and Close."""
 
@@ -251,7 +241,7 @@ class GameStartView(discord.ui.View):
         how_to_play: str,
         timer_info: str,
         start_callback: Callable,
-        difficulties: Optional[List[str]] = None,
+        difficulties: list[str] | None = None,
         default_difficulty: str = "Medium",
         timeout: float = 300.0,
     ):
@@ -263,7 +253,7 @@ class GameStartView(discord.ui.View):
         self.timer_info = timer_info
         self.start_callback = start_callback
         self.selected_difficulty = default_difficulty
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self._started = False
         self._lock = asyncio.Lock()
 
@@ -356,7 +346,6 @@ class GameStartView(discord.ui.View):
             except Exception:
                 pass
 
-
 class GameResultView(discord.ui.View):
     """Standardized Part 4.3 Result Screen actions: [Play Again] [View Stats] [Close]."""
 
@@ -431,11 +420,10 @@ class GameResultView(discord.ui.View):
     async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal(self.game_name))
 
-
 class PaginatedEmbedView(discord.ui.View):
     """Reusable pagination control for events, leaderboards, and knowledge lists."""
 
-    def __init__(self, user_id: int, pages: List[discord.Embed], timeout: float = 300.0):
+    def __init__(self, user_id: int, pages: list[discord.Embed], timeout: float = 300.0):
         super().__init__(timeout=timeout)
         self.user_id = user_id
         self.pages = pages
@@ -466,7 +454,6 @@ class PaginatedEmbedView(discord.ui.View):
         self.index = min(len(self.pages) - 1, self.index + 1)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.pages[self.index], view=self)
-
 
 def install_global_ui_error_handlers() -> None:
     """Ensure every View (Buttons/Selects) and Modal replies cleanly if an unexpected error occurs."""

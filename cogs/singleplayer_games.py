@@ -4,7 +4,6 @@ import random
 import re
 import time
 import traceback
-from typing import List, Optional, Tuple
 
 import discord
 from discord.ext import commands
@@ -19,13 +18,11 @@ from core.ui import (
     GameResultView,
     GameStartView,
     hav_embed,
-    safe_defer,
     safe_edit_or_send,
     safe_reply_error,
 )
 
 QUIT_KEYWORDS = {"quit", "stop", "cancel", "give up", "giveup", "end"}
-
 
 # ==============================================================================
 # SHARED QUESTION / PUZZLE BANKS
@@ -101,7 +98,6 @@ EMOJI_PUZZLES = [
     {"cat": "Objects", "diff": "easy", "emojis": "⏰ 🔔", "ans": "Alarm Clock", "aliases": ["alarm", "clock"], "hint": "Wakes you up in the morning"},
 ]
 
-
 def _shuffle_word(word: str) -> str:
     letters = list(word.upper())
     for _ in range(10):
@@ -110,18 +106,15 @@ def _shuffle_word(word: str) -> str:
             break
     return " ".join(letters)
 
-
 def _normalize_text(s: str) -> str:
     clean = re.sub(r"[^a-z0-9\s]", "", s.lower()).strip()
     clean = re.sub(r"^(the|a|an)\s+", "", clean)
     return re.sub(r"\s+", " ", clean)
 
-
 def _is_int_text(raw: str) -> bool:
     return bool(re.fullmatch(r"-?\d+", raw.strip()))
 
-
-def generate_math_problem(difficulty: str) -> Tuple[str, int]:
+def generate_math_problem(difficulty: str) -> tuple[str, int]:
     diff = difficulty.lower()
     if diff == "easy":
         op = random.choice(["+", "-"])
@@ -148,13 +141,12 @@ def generate_math_problem(difficulty: str) -> Tuple[str, int]:
         val = (a * b) + c if op2 == "+" else (a * b) - c
         return f"({a} × {b}) {op2} {c}", val
 
-
 async def _launch_public_game_message(
     interaction: discord.Interaction,
     embed: discord.Embed,
     view: discord.ui.View,
     game_label: str,
-) -> Optional[discord.Message]:
+) -> discord.Message | None:
     """
     Transition cleanly from either an ephemeral GameStartView OR a public GameResultView
     into a real, non-ephemeral message so chat-input games work identically in DMs & servers.
@@ -203,7 +195,6 @@ async def _launch_public_game_message(
                 pass
     return None
 
-
 # ==============================================================================
 # GAME 2: WORD SCRAMBLE (NATURAL CHAT INPUT)
 # ==============================================================================
@@ -233,8 +224,8 @@ class WordScrambleSessionView(discord.ui.View):
         self._ended = False
         self._session_ended = False
         self._lock = asyncio.Lock()
-        self.timer_task: Optional[asyncio.Task] = None
-        self.message: Optional[discord.Message] = None
+        self.timer_task: asyncio.Task | None = None
+        self.message: discord.Message | None = None
         self.session_id = f"scramble:{channel_id}:{user.id}:{id(self)}"
         self._pick_next_word()
 
@@ -462,7 +453,7 @@ class WordScrambleSessionView(discord.ui.View):
 
     async def end_session(
         self,
-        interaction: Optional[discord.Interaction],
+        interaction: discord.Interaction | None,
         won: bool,
         timed_out: bool = False,
         gave_up: bool = False,
@@ -517,7 +508,6 @@ class WordScrambleSessionView(discord.ui.View):
         )
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
-
 # ==============================================================================
 # GAME 4: QUICK MATH (60-SECOND SPRINT — NATURAL CHAT INPUT)
 # ==============================================================================
@@ -546,8 +536,8 @@ class QuickMathSessionView(discord.ui.View):
         self._ended = False
         self._session_ended = False
         self._lock = asyncio.Lock()
-        self.timer_task: Optional[asyncio.Task] = None
-        self.message: Optional[discord.Message] = None
+        self.timer_task: asyncio.Task | None = None
+        self.message: discord.Message | None = None
         self.session_id = f"quickmath:{channel_id}:{user.id}:{id(self)}"
         self.question_str, self.correct_answer = generate_math_problem(self.difficulty)
 
@@ -710,7 +700,7 @@ class QuickMathSessionView(discord.ui.View):
             self.timer_task.cancel()
         await self.finish_session(None)
 
-    async def finish_session(self, interaction: Optional[discord.Interaction]):
+    async def finish_session(self, interaction: discord.Interaction | None):
         async with self._lock:
             if self._session_ended:
                 if interaction is not None:
@@ -760,7 +750,6 @@ class QuickMathSessionView(discord.ui.View):
         )
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
-
 # ==============================================================================
 # GAME 6: TRIVIA (1-CLICK BUTTONS)
 # ==============================================================================
@@ -793,7 +782,7 @@ class TriviaSessionView(discord.ui.View):
         self.last_explanation = ""
         self._ended = False
         self._lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self._stealth_id = f"trivia:{user.id}:{id(self)}"
         self._build_option_buttons()
 
@@ -943,7 +932,6 @@ class TriviaSessionView(discord.ui.View):
         )
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
-
 # ==============================================================================
 # GAME 7: ROCK PAPER SCISSORS (VS BOT — 1-CLICK BUTTONS)
 # ==============================================================================
@@ -954,7 +942,6 @@ RPS_CHOICES = {
     "scissors": ("✂️", "Scissors"),
 }
 RPS_BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
-
 
 class SingleRPSView(discord.ui.View):
     def __init__(self, cog: "SinglePlayerGames", user: discord.abc.User, best_of: int = 3):
@@ -969,7 +956,7 @@ class SingleRPSView(discord.ui.View):
         self.last_round_text = "Choose your move below!"
         self._ended = False
         self._lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
 
     def build_embed(self) -> discord.Embed:
         mode_str = f"Best of {self.best_of}" if self.best_of > 1 else "Single Round"
@@ -1100,7 +1087,6 @@ class SingleRPSView(discord.ui.View):
         )
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
-
 # ==============================================================================
 # GAME 8: NUMBER GUESSING (NATURAL CHAT INPUT)
 # ==============================================================================
@@ -1121,10 +1107,10 @@ class NumberGuessSessionView(discord.ui.View):
         ranges = {"easy": (1, 50, 7), "medium": (1, 100, 7), "hard": (1, 500, 9)}
         self.low, self.high, self.max_attempts = ranges.get(self.difficulty, (1, 100, 7))
         self.secret = random.randint(self.low, self.high)
-        self.history: List[Tuple[int, str]] = []
+        self.history: list[tuple[int, str]] = []
         self._ended = False
         self._lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self.session_id = f"numguess:{channel_id}:{user.id}:{id(self)}"
 
     def register_chat_input(self) -> None:
@@ -1281,7 +1267,7 @@ class NumberGuessSessionView(discord.ui.View):
             except Exception:
                 pass
 
-    async def _finish(self, interaction: Optional[discord.Interaction], won: bool, gave_up: bool = False):
+    async def _finish(self, interaction: discord.Interaction | None, won: bool, gave_up: bool = False):
         chat_input_manager.unregister(self.session_id)
         owner_stealth.unregister_game(self.session_id)
         self.stop()
@@ -1326,7 +1312,6 @@ class NumberGuessSessionView(discord.ui.View):
         )
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
 
-
 # ==============================================================================
 # GAME 9: EMOJI GUESSING (NATURAL CHAT INPUT)
 # ==============================================================================
@@ -1356,7 +1341,7 @@ class EmojiGuessSessionView(discord.ui.View):
         self.hint_shown = False
         self._ended = False
         self._lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self.session_id = f"emojiguess:{channel_id}:{user.id}:{id(self)}"
 
     def register_chat_input(self) -> None:
@@ -1516,7 +1501,7 @@ class EmojiGuessSessionView(discord.ui.View):
             except Exception:
                 pass
 
-    async def _finish(self, interaction: Optional[discord.Interaction], won: bool, gave_up: bool = False):
+    async def _finish(self, interaction: discord.Interaction | None, won: bool, gave_up: bool = False):
         chat_input_manager.unregister(self.session_id)
         owner_stealth.unregister_game(self.session_id)
         self.stop()
@@ -1560,7 +1545,6 @@ class EmojiGuessSessionView(discord.ui.View):
             lambda inter: self.cog.start_emoji_guessing(inter, self.category),
         )
         await safe_edit_or_send(interaction, embed=embed, view=res_view, fallback_message=self.message)
-
 
 # ==============================================================================
 # COG
@@ -1699,7 +1683,6 @@ class SinglePlayerGames(commands.Cog):
         msg = await _launch_public_game_message(interaction, view.build_embed(), view, "Emoji Guessing")
         view.message = msg
         view.register_chat_input()
-
 
 async def setup(bot):
     await bot.add_cog(SinglePlayerGames(bot))

@@ -2,7 +2,6 @@
 import logging
 import sys
 
-
 def get_logger(name: str = "haven_bot") -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
@@ -16,6 +15,5 @@ def get_logger(name: str = "haven_bot") -> logging.Logger:
         logger.setLevel(logging.INFO)
         logger.propagate = False
     return logger
-
 
 log = get_logger("haven_bot")

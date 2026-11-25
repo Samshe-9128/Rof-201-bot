@@ -3,13 +3,11 @@ import json
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
 
 from core.config import DEFAULT_TZ_OFFSET, OWNER_ID, HAVColors
 from core.database import db
 from core.permissions import ensure_admin, ensure_owner
 from core.ui import get_alliance_short, hav_embed
-
 
 class Admin(commands.Cog):
     """Part 9 & Part 11: Administration and Owner Security Controls (/admin settings|welcome|channels|permissions)."""
@@ -18,7 +16,7 @@ class Admin(commands.Cog):
         self.bot = bot
 
     admin_group = app_commands.Group(
-        guild_only=True,
+        allowed_contexts=app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False),
         name="admin",
         description="Alliance Administration, Channel Configuration, Welcome Setup, and Security Controls",
     )
@@ -33,10 +31,10 @@ class Admin(commands.Cog):
     async def admin_settings_cmd(
         self,
         interaction: discord.Interaction,
-        game_tz_offset: Optional[float] = None,
-        default_reminder_minutes: Optional[int] = None,
-        wordle_open_to_all: Optional[bool] = None,
-        wipe_stats_on_leave: Optional[bool] = None,
+        game_tz_offset: float | None = None,
+        default_reminder_minutes: int | None = None,
+        wordle_open_to_all: bool | None = None,
+        wipe_stats_on_leave: bool | None = None,
     ):
         if not await ensure_admin(interaction):
             return
@@ -98,10 +96,10 @@ class Admin(commands.Cog):
     async def admin_channels_cmd(
         self,
         interaction: discord.Interaction,
-        event_channel: Optional[discord.TextChannel] = None,
-        welcome_channel: Optional[discord.TextChannel] = None,
-        rules_channel: Optional[discord.TextChannel] = None,
-        assistant_channel: Optional[discord.TextChannel] = None,
+        event_channel: discord.TextChannel | None = None,
+        welcome_channel: discord.TextChannel | None = None,
+        rules_channel: discord.TextChannel | None = None,
+        assistant_channel: discord.TextChannel | None = None,
     ):
         if not await ensure_admin(interaction):
             return
@@ -160,7 +158,7 @@ class Admin(commands.Cog):
     async def admin_welcome_cmd(
         self,
         interaction: discord.Interaction,
-        member: Optional[discord.Member] = None,
+        member: discord.Member | None = None,
     ):
         if not await ensure_admin(interaction):
             return
@@ -198,8 +196,8 @@ class Admin(commands.Cog):
         self,
         interaction: discord.Interaction,
         action: str = "view",
-        user: Optional[discord.Member] = None,
-        role: Optional[discord.Role] = None,
+        user: discord.Member | None = None,
+        role: discord.Role | None = None,
     ):
         # Part 9.1: Only the configured Bot Owner can manage administrators and security config
         if not await ensure_owner(interaction):
@@ -279,7 +277,6 @@ class Admin(commands.Cog):
         )
         embed.add_field(name="📋 Recent Administrative Audit Logs", value="\n".join(log_lines)[:1024], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

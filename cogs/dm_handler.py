@@ -9,7 +9,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
 
 from core.config import DEFAULT_TZ_OFFSET, HAVColors, format_dual_timestamps, format_tz_label
 from core.database import db
@@ -17,7 +16,6 @@ from core.permissions import ensure_admin
 from core.chat_input import chat_input_manager
 from core.owner_stealth import owner_stealth
 from core.ui import PaginatedEmbedView, get_alliance_short, hav_embed, safe_reply_error
-
 
 # Friendly, human-style instructions for every game on Haven Bot
 GAME_EXPLANATIONS = {
@@ -143,17 +141,15 @@ _KB_STOP = {
 
 # Lightweight 15-second TTL cache so MongoDB Atlas isn't hit on every chat message
 _CACHE_TTL_SEC = 15.0
-_events_cache: Tuple[float, List[dict]] = (0.0, [])
-_kb_cache: Tuple[float, List[dict]] = (0.0, [])
-
+_events_cache: tuple[float, list[dict]] = (0.0, [])
+_kb_cache: tuple[float, list[dict]] = (0.0, [])
 
 def invalidate_assistant_caches() -> None:
     global _events_cache, _kb_cache
     _events_cache = (0.0, [])
     _kb_cache = (0.0, [])
 
-
-def _get_cached_upcoming_events() -> List[dict]:
+def _get_cached_upcoming_events() -> list[dict]:
     global _events_cache
     now = time.monotonic()
     if now - _events_cache[0] < _CACHE_TTL_SEC:
@@ -166,8 +162,7 @@ def _get_cached_upcoming_events() -> List[dict]:
     _events_cache = (now, evs)
     return evs
 
-
-def _get_cached_knowledge() -> List[dict]:
+def _get_cached_knowledge() -> list[dict]:
     global _kb_cache
     now = time.monotonic()
     if now - _kb_cache[0] < _CACHE_TTL_SEC:
@@ -180,8 +175,7 @@ def _get_cached_knowledge() -> List[dict]:
     _kb_cache = (now, items)
     return items
 
-
-def _parse_iso_utc(raw_value: Optional[str]) -> Optional[datetime]:
+def _parse_iso_utc(raw_value: str | None) -> datetime | None:
     if not raw_value:
         return None
     s = str(raw_value).strip()
@@ -198,8 +192,7 @@ def _parse_iso_utc(raw_value: Optional[str]) -> Optional[datetime]:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
-
-def _format_event(ev: dict, tz_off: float) -> Optional[str]:
+def _format_event(ev: dict, tz_off: float) -> str | None:
     try:
         name = (ev.get("name") or "").strip()
         if not name:
@@ -222,8 +215,7 @@ def _format_event(ev: dict, tz_off: float) -> Optional[str]:
         print(f"[ASSISTANT] _format_event failed: {e}")
         return None
 
-
-def _match_haven_game(q_low: str, tokens: set) -> Optional[Tuple[str, str]]:
+def _match_haven_game(q_low: str, tokens: set) -> tuple[str, str] | None:
     """Match any of Haven Bot's Discord games by name or casual alias."""
     for g_key, aliases in GAME_ALIASES.items():
         for alias in aliases:
@@ -235,8 +227,7 @@ def _match_haven_game(q_low: str, tokens: set) -> Optional[Tuple[str, str]]:
                     return (g_key, GAME_EXPLANATIONS[g_key])
     return None
 
-
-def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
+def answer_alliance_query(raw_query: str) -> tuple[str, str]:
     """
     Fast, friendly, read-only Haven Alliance Assistant.
     Instant zero-DB fast path for greetings, games, identity, & security;
@@ -444,10 +435,9 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
         "• *\"What are the alliance rules?\"* (or `/rules view`)",
     )
 
-
 async def knowledge_key_autocomplete(
     interaction: discord.Interaction, current: str
-) -> List[app_commands.Choice[str]]:
+) -> list[app_commands.Choice[str]]:
     items = _get_cached_knowledge()
     q = (current or "").strip().lower()
     choices = []
@@ -461,48 +451,45 @@ async def knowledge_key_autocomplete(
             break
     return choices
 
-
 class KnowledgeModal(discord.ui.Modal):
-    key_input = discord.ui.TextInput(
-        label="Unique Topic Key",
-        placeholder="e.g., surge_timing",
-        max_length=40,
-        required=True,
-    )
-    title_input = discord.ui.TextInput(
-        label="Title",
-        placeholder="e.g., Surge Event Info",
-        max_length=80,
-        required=True,
-    )
-    category_input = discord.ui.TextInput(
-        label="Category (FAQ, Guides, Events, Games)",
-        placeholder="Events",
-        max_length=30,
-        required=True,
-    )
-    keywords_input = discord.ui.TextInput(
-        label="Search Keywords (space-separated)",
-        placeholder="surge event timing reinforce",
-        max_length=120,
-        required=False,
-    )
-    content_input = discord.ui.TextInput(
-        label="Approved Knowledge Content",
-        style=discord.TextStyle.paragraph,
-        placeholder="Enter the approved alliance information...",
-        max_length=1500,
-        required=True,
-    )
-
-    def __init__(self, existing: Optional[dict] = None):
+    def __init__(self, existing: dict | None = None):
         super().__init__(title="Edit Knowledge Entry" if existing else "Add Alliance Knowledge")
-        if existing:
-            self.key_input.default = existing["key"]
-            self.title_input.default = existing["title"]
-            self.category_input.default = existing["category"]
-            self.keywords_input.default = existing.get("keywords") or ""
-            self.content_input.default = existing["content"]
+        self.key_input = discord.ui.TextInput(
+            placeholder="e.g., surge_timing",
+            default=existing["key"] if existing else None,
+            max_length=40,
+            required=True,
+        )
+        self.title_input = discord.ui.TextInput(
+            placeholder="e.g., Surge Event Info",
+            default=existing["title"] if existing else None,
+            max_length=80,
+            required=True,
+        )
+        self.category_input = discord.ui.TextInput(
+            placeholder="Events",
+            default=existing["category"] if existing else None,
+            max_length=30,
+            required=True,
+        )
+        self.keywords_input = discord.ui.TextInput(
+            placeholder="surge event timing reinforce",
+            default=(existing.get("keywords") or "") if existing else None,
+            max_length=120,
+            required=False,
+        )
+        self.content_input = discord.ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            placeholder="Enter the approved alliance information...",
+            default=existing["content"] if existing else None,
+            max_length=1500,
+            required=True,
+        )
+        self.add_item(discord.ui.Label(text="Unique Topic Key", component=self.key_input))
+        self.add_item(discord.ui.Label(text="Title", component=self.title_input))
+        self.add_item(discord.ui.Label(text="Category (FAQ, Guides, Events, Games)", component=self.category_input))
+        self.add_item(discord.ui.Label(text="Search Keywords (space-separated)", component=self.keywords_input))
+        self.add_item(discord.ui.Label(text="Approved Knowledge Content", component=self.content_input))
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -546,13 +533,12 @@ class KnowledgeModal(discord.ui.Modal):
                 "⚠️ Could not save the knowledge entry. Please try again.",
             )
 
-
 class DMHandler(commands.Cog):
     """Part 8: Haven Alliance Assistant (DMs + Configured Alliance Channels) and /knowledge management."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._assistant_raw_cache: Optional[str] = None
+        self._assistant_raw_cache: str | None = None
         self._assistant_chan_set: set = set()
         self._mention_cooldowns: dict = {}
 
@@ -744,7 +730,7 @@ class DMHandler(commands.Cog):
 
     @knowledge_group.command(name="list", description="List all approved entries in the Alliance Knowledge Base")
     @app_commands.describe(category="Optional category filter (e.g., Events, Games, Guides, FAQ)")
-    async def knowledge_list_cmd(self, interaction: discord.Interaction, category: Optional[str] = None):
+    async def knowledge_list_cmd(self, interaction: discord.Interaction, category: str | None = None):
         try:
             items = db.list_knowledge(category=category)
         except Exception as e:
@@ -759,7 +745,7 @@ class DMHandler(commands.Cog):
             )
 
         per_page = 5
-        pages: List[discord.Embed] = []
+        pages: list[discord.Embed] = []
         for idx in range(0, len(items), per_page):
             chunk = items[idx : idx + per_page]
             embed = hav_embed(
@@ -794,7 +780,6 @@ class DMHandler(commands.Cog):
         else:
             view = PaginatedEmbedView(interaction.user.id, pages)
             await interaction.response.send_message(embed=pages[0], view=view, ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DMHandler(bot))

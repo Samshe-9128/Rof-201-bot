@@ -1,7 +1,6 @@
 # cogs/fast_games.py
 import asyncio
 import random
-from typing import Dict, List, Optional
 
 import discord
 from discord import app_commands
@@ -15,12 +14,10 @@ from core.rooms import MultiplayerRoom, RoomLobbyView, room_manager
 from core.owner_stealth import best_tictactoe_move, format_treasure_map, owner_stealth
 from core.ui import GameResultView, get_alliance_short, hav_embed, safe_defer, safe_edit_or_send, safe_reply_error, send_private_bug_tip
 
-
 def _disable_all(view: discord.ui.View) -> None:
     for child in view.children:
         if isinstance(child, (discord.ui.Button, discord.ui.Select)):
             child.disabled = True
-
 
 # ==============================================================================
 # 1. HIGHER OR LOWER (SINGLE PLAYER — INSTANT 1-CLICK STREAK)
@@ -40,7 +37,7 @@ class HigherLowerView(discord.ui.View):
         self.score = 0
         self.finished = False
         self.last_note = "Will the next number (`1–100`) be **Higher** or **Lower**?"
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self._lock = asyncio.Lock()
         self._sync_buttons()
 
@@ -225,7 +222,6 @@ class HigherLowerView(discord.ui.View):
             except Exception:
                 pass
 
-
 # ==============================================================================
 # 2. TREASURE HUNT 3x3 (SINGLE PLAYER — FAST SAFE-TILE RISK/REWARD)
 # ==============================================================================
@@ -243,7 +239,7 @@ class TreasureHuntView(discord.ui.View):
         self.score = 0
         self.finished = False
         self._lock = asyncio.Lock()
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
 
         for idx in range(9):
             btn = discord.ui.Button(
@@ -467,7 +463,6 @@ class TreasureHuntView(discord.ui.View):
             except Exception:
                 pass
 
-
 # ==============================================================================
 # 3. TIC-TAC-TOE (2-PLAYER MULTIPLAYER — FAST 3x3 GRID)
 # ==============================================================================
@@ -487,7 +482,7 @@ class TicTacToeView(discord.ui.View):
         self.room = room
         self.p1 = room.players[0]
         self.p2 = room.players[1]
-        self.board: List[int] = [0] * 9
+        self.board: list[int] = [0] * 9
         self.turn = 1
         self.moves = 0
         self.finished = False
@@ -635,18 +630,19 @@ class TicTacToeView(discord.ui.View):
             except Exception:
                 pass
 
-
 # ==============================================================================
 # 4. CLOSEST WINS (2–10 PLAYERS — 1-ROUND INSTANT NUMBER DUEL)
 # ==============================================================================
 
 class ClosestWinsModal(discord.ui.Modal, title="🎯 Closest Wins — Enter Number"):
-    guess_input = discord.ui.TextInput(
-        label="Pick a number between 1 and 100",
-        placeholder="e.g., 42",
-        min_length=1,
-        max_length=3,
-        required=True,
+    guess_input = discord.ui.Label(
+        text="Pick a number between 1 and 100",
+        component=discord.ui.TextInput(
+            placeholder="e.g., 42",
+            min_length=1,
+            max_length=3,
+            required=True,
+        ),
     )
 
     def __init__(self, view: "ClosestWinsView"):
@@ -654,13 +650,12 @@ class ClosestWinsModal(discord.ui.Modal, title="🎯 Closest Wins — Enter Numb
         self.game_view = view
 
     async def on_submit(self, interaction: discord.Interaction):
-        raw = self.guess_input.value.strip()
+        raw = self.guess_input.component.value.strip()
         if not raw.isdigit() or not (1 <= int(raw) <= 100):
             return await interaction.response.send_message(
                 "❌ Enter a valid whole number between **1** and **100**.", ephemeral=True
             )
         await self.game_view.record_guess(interaction, int(raw))
-
 
 class ClosestWinsView(discord.ui.View):
     """Fast 20-second simultaneous number guess duel (auto-finishes when all submit)."""
@@ -671,10 +666,10 @@ class ClosestWinsView(discord.ui.View):
         self.room = room
         self.target = random.randint(1, 100)
         self._stealth_id = f"closest:{room.room_id}" 
-        self.guesses: Dict[int, int] = {}
+        self.guesses: dict[int, int] = {}
         self.finished = False
         self._lock = asyncio.Lock()
-        self.timer_task: Optional[asyncio.Task] = None
+        self.timer_task: asyncio.Task | None = None
 
     def build_embed(self) -> discord.Embed:
         lines = []
@@ -798,7 +793,6 @@ class ClosestWinsView(discord.ui.View):
             except Exception as e:
                 log.warning("Closest Wins finish edit failed: %s", e)
 
-
 # ==============================================================================
 # COG & SLASH COMMANDS
 # ==============================================================================
@@ -808,7 +802,6 @@ class ClosestWinsView(discord.ui.View):
             self.finished = True
             owner_stealth.unregister_game(self._stealth_id)
             _disable_all(self)
-
 
 class FastGames(commands.Cog):
     """Fast, low-latency interactive Discord games (Single & Multiplayer)."""
@@ -918,7 +911,7 @@ class FastGames(commands.Cog):
         except Exception:
             pass
 
-    @app_commands.guild_only()
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.command(name="tictactoe", description="Start a fast 2-player Tic-Tac-Toe duel")
     async def tictactoe_cmd(self, interaction: discord.Interaction):
         await self.open_tictactoe_room(interaction)
@@ -930,7 +923,6 @@ class FastGames(commands.Cog):
     @app_commands.command(name="treasure", description="Play fast 3x3 Treasure Hunt (avoid the 2 bombs!)")
     async def treasure_cmd(self, interaction: discord.Interaction):
         await self.start_treasure_hunt(interaction)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(FastGames(bot))

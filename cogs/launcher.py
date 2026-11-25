@@ -11,7 +11,6 @@ from core.database import db
 from core.rooms import room_manager
 from core.ui import get_alliance_name, get_alliance_short, hav_embed
 
-
 SINGLE_PLAYER_CATALOG = [
     ("higher_lower", "⬆️⬇️ Higher or Lower", "Instant 1-click number streak — push your luck or Cash Out!"),
     ("treasure_hunt", "💎 Treasure Hunt (3x3)", "Find 7 safe gems and avoid 2 hidden bombs — instant clicks!"),
@@ -40,7 +39,6 @@ MULTIPLAYER_CATALOG = [
     ("connect4", "🔴 Connect 4 (2p)", "Classic 7x6 grid strategy duel"),
 ]
 
-
 # ==============================================================================
 # HELPERS
 # ==============================================================================
@@ -51,7 +49,6 @@ def _disable_all(view: discord.ui.View) -> None:
             child.disabled = True
         except Exception:
             pass
-
 
 async def _safe_edit(interaction: discord.Interaction, embed: discord.Embed, view: discord.ui.View) -> None:
     try:
@@ -64,7 +61,6 @@ async def _safe_edit(interaction: discord.Interaction, embed: discord.Embed, vie
     except Exception as e:
         print(f"[LAUNCHER] safe_edit failed: {type(e).__name__}: {e}")
 
-
 async def _notify_error(interaction: discord.Interaction, message: str = "⚠️ Could not launch that game. Please try again.") -> None:
     try:
         if not interaction.response.is_done():
@@ -73,7 +69,6 @@ async def _notify_error(interaction: discord.Interaction, message: str = "⚠️
             await interaction.followup.send(message, ephemeral=True)
     except Exception:
         pass
-
 
 # ==============================================================================
 # SINGLE-PLAYER MENU
@@ -219,7 +214,6 @@ class SinglePlayerMenuView(discord.ui.View):
         # fix G: disable stale buttons on timeout.
         _disable_all(self)
 
-
 # ==============================================================================
 # MULTIPLAYER MENU
 # ==============================================================================
@@ -331,7 +325,6 @@ class MultiplayerMenuView(discord.ui.View):
 
     async def on_timeout(self):
         _disable_all(self)
-
 
 # ==============================================================================
 # MAIN ARENA MENU
@@ -489,7 +482,6 @@ class GamingArenaMainView(discord.ui.View):
     async def on_timeout(self):
         _disable_all(self)
 
-
 def build_game_help_embed() -> discord.Embed:
     short = get_alliance_short()
     embed = hav_embed(
@@ -530,7 +522,6 @@ def build_game_help_embed() -> discord.Embed:
         inline=False,
     )
     return embed
-
 
 # ==============================================================================
 # COG
@@ -614,7 +605,6 @@ class Launcher(commands.Cog):
             inline=False,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
     @app_commands.command(name="ping", description="Check bot latency, uptime, and database status")
     @app_commands.checks.cooldown(1, 3.0)
