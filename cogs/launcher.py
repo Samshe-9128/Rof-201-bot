@@ -606,10 +606,10 @@ class Launcher(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="🤖 Alliance AI Assistant",
+            name="💬 Haven Chat Assistant",
             value=(
-                "Send me a Direct Message (or ask in a configured alliance channel) about "
-                "upcoming events, rules, strategies, or how to play any game!"
+                "DM me, `@mention` me, or ask in a configured alliance channel about "
+                "upcoming event timings, alliance rules, or how to play any game!"
             ),
             inline=False,
         )

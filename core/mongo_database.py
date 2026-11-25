@@ -132,16 +132,19 @@ class MongoDatabase:
             # Remove deprecated alliance-override keys so HAV / Haven is authoritative
             self._config.delete_many({"key": {"$in": ["alliance_short", "alliance_name", "alliance_footer"]}})
 
-            # Auto-seed any missing default knowledge base entries (preserves custom edits)
-            existing_keys = {d.get("key") for d in self._knowledge.find({}, {"key": 1})}
+            # Remove old untouched default LoJ wiki entries while preserving any admin-edited entries
+            self._knowledge.delete_many({"key": {"$regex": "^loj_"}, "updated_by": 0})
+            # Auto-seed missing defaults & refresh untouched defaults (updated_by == 0), preserving custom admin edits
+            existing_docs = {d.get("key"): d.get("updated_by", 0) for d in self._knowledge.find({}, {"key": 1, "updated_by": 1})}
             for item in DEFAULT_KNOWLEDGE_ENTRIES:
-                if item["key"] not in existing_keys:
+                k = item["key"]
+                if k not in existing_docs:
                     self._knowledge.update_one(
-                        {"key": item["key"]},
+                        {"key": k},
                         {
                             "$setOnInsert": {
                                 "id": self._next_seq("knowledge_base"),
-                                "key": item["key"],
+                                "key": k,
                                 "title": item["title"],
                                 "category": item["category"],
                                 "content": item["content"],
@@ -151,6 +154,18 @@ class MongoDatabase:
                             }
                         },
                         upsert=True,
+                    )
+                elif int(existing_docs.get(k) or 0) == 0:
+                    self._knowledge.update_one(
+                        {"key": k, "updated_by": 0},
+                        {
+                            "$set": {
+                                "title": item["title"],
+                                "category": item["category"],
+                                "content": item["content"],
+                                "keywords": item["keywords"],
+                            }
+                        },
                     )
 
             # Seed default rules if empty

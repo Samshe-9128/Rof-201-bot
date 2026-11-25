@@ -119,20 +119,21 @@ class HAVColors:
     INFO = 0x3498DB         # Information blue
 
 
-RANKS = [
-    (0, "Bronze", "🥉"),
-    (100, "Silver", "🥈"),
-    (250, "Gold", "🥇"),
-    (500, "Diamond", "💎"),
-    (1000, "HAV Legend", "👑"),
+# Rank Ladder (HAV Theme)
+RANK_LADDER = [
+    (0, "Recruit", "🪨"),
+    (100, "Scout", "🛡️"),
+    (300, "Enforcer", "⚔️"),
+    (600, "Vanguard", "🔥"),
+    (1000, "Captain", "🎖️"),
+    (1500, "Commander", "👑"),
+    (2500, "HAV Legend", "🏆"),
 ]
 
 
-def get_rank(points: int, alliance_short: str = None):
-    short = (alliance_short or BRAND_SHORT).strip() or BRAND_SHORT
-    current = (RANKS[0][1], RANKS[0][2])
-    for threshold, name, emoji in RANKS:
+def get_rank_info(points: int) -> tuple:
+    current = RANK_LADDER[0]
+    for threshold, name, icon in RANK_LADDER:
         if points >= threshold:
-            resolved = f"{short} Legend" if name == "HAV Legend" else name
-            current = (resolved, emoji)
+            current = (threshold, name, icon)
     return current

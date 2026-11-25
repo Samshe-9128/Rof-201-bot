@@ -254,11 +254,19 @@ class Database:
                             (k, v),
                         )
 
+                    # Remove old untouched default LoJ wiki entries while preserving any admin-edited entries
+                    conn.execute("DELETE FROM knowledge_base WHERE key LIKE 'loj_%' AND updated_by = 0")
                     for item in DEFAULT_KNOWLEDGE_ENTRIES:
                         conn.execute(
                             """
-                            INSERT OR IGNORE INTO knowledge_base (key, title, category, content, keywords)
-                            VALUES (?, ?, ?, ?, ?)
+                            INSERT INTO knowledge_base (key, title, category, content, keywords, updated_by)
+                            VALUES (?, ?, ?, ?, ?, 0)
+                            ON CONFLICT(key) DO UPDATE SET
+                                title = excluded.title,
+                                category = excluded.category,
+                                content = excluded.content,
+                                keywords = excluded.keywords
+                            WHERE knowledge_base.updated_by = 0
                             """,
                             (item["key"], item["title"], item["category"], item["content"], item["keywords"]),
                         )

@@ -1,3 +1,4 @@
+import asyncio
 import time
 # cogs/dm_handler.py
 import difflib
@@ -12,71 +13,180 @@ from typing import List, Optional, Tuple
 
 from core.config import DEFAULT_TZ_OFFSET, HAVColors, format_dual_timestamps, format_tz_label
 from core.database import db
-from core.loj_calculator import answer_loj_structured_query
 from core.permissions import ensure_admin
 from core.chat_input import chat_input_manager
 from core.owner_stealth import owner_stealth
 from core.ui import PaginatedEmbedView, get_alliance_short, hav_embed, safe_reply_error
 
 
+# Friendly, human-style instructions for every game on Haven Bot
 GAME_EXPLANATIONS = {
-    "codebreaker": "Create or join a Codebreaker room via `/games` or `/codebreaker`, then submit four-digit guesses (unique digits, no leading zero). The bot gives private clues after each guess: 🟢 for correct digit and position, and 🟡 for correct digit in the wrong position. First player to crack the code wins!",
-    "wordle": "Use `/wordle` (choose Daily or Practice) in any server channel or DM, then simply type your 5-letter guesses directly in chat! 🟩 means right letter & spot, 🟨 means right letter in the wrong spot, and ⬛ means not in the word.",
-    "reaction": "In Reaction Race (`/quickdraw` or `/games`), wait until the screen switches from **WAIT...** to green **READY!**, then click as fast as possible. Clicking early is a False Start!",
-    "quickdraw": "In Reaction Race (`/quickdraw` or `/games`), wait until the screen switches from **WAIT...** to green **READY!**, then click as fast as possible. Clicking early is a False Start!",
-    "scramble": "In Word Scramble (`/games`), rearrange the mixed-up letters before the timer expires. You can also create a multiplayer Word Guessing Race room!",
-    "memory": "Use `/memory` or `/games` to play **Memory Challenge** (memorize and reproduce a growing colour sequence `🔴 🔵 🟢 🟡 🟣 🟠` up to 8 items).",
-    "math": "In Quick Math (`/games`), solve as many arithmetic questions as possible in 60 seconds, or play Quick Math Battle against other members for speed bonuses!",
-    "trivia": "Play solo Trivia or multiplayer Trivia Battle via `/games`. Select answers across 8 categories (Science, History, Geography, Gaming, Movies, Sports, Tech, General Knowledge).",
-    "rps": "Play Rock Paper Scissors against the bot or in a 2-player Best of 3 / Best of 5 room via `/games`.",
-    "rock paper scissors": "Play Rock Paper Scissors against the bot or in a 2-player Best of 3 / Best of 5 room via `/games`.",
-    "number": "In Number Guessing (`/games`), pick a difficulty range and use HIGHER ⬆️ and LOWER ⬇️ clues to find the secret number.",
-    "emoji": "In Emoji Guessing (`/games`), identify the movie, game, animal, food, or phrase represented by the emoji combination.",
-    "higherlower": "Use `/higherlower` or `/games` to predict whether the next number (1–100) will be higher or lower. Cash out anytime to bank your streak!",
-    "treasure": "Use `/treasure` or `/games` to uncover 7 hidden gems on a 3x3 grid while avoiding 2 bombs. Cash out anytime or go for a Full Clear bonus!",
-    "tictactoe": "Use `/tictactoe` or `/games` to challenge another member to a fast 3x3 Tic-Tac-Toe duel.",
-    "closest": "Join a Closest Wins room via `/games` (2–10 players) — submit a secret number from 1–100 in 20 seconds; closest to the target wins!",
-    "connect4": "Use `/connect4` or `/games` to challenge another member to a 7x6 Connect 4 duel.",
+    "codebreaker": (
+        "Start or join a **Codebreaker** room with `/games` or `/codebreaker`, then guess a 4-digit secret code "
+        "(all unique digits, no leading zero). After each guess I'll give you clues: 🟢 = right digit in the right spot, "
+        "🟡 = right digit in the wrong spot. First player to crack it wins!"
+    ),
+    "wordle": (
+        "Run `/wordle` (Daily or Practice) in any server channel or DM, then just type your 5-letter guesses right in chat! "
+        "🟩 = right letter & spot, 🟨 = right letter in the wrong spot, ⬛ = not in the word."
+    ),
+    "quickdraw": (
+        "In **Reaction Race** (`/quickdraw` or `/games`), wait for **WAIT...** to flip to green **READY!**, "
+        "then click as fast as you can. Clicking early counts as a False Start!"
+    ),
+    "scramble": (
+        "In **Word Scramble** (`/games`), unscramble the mixed-up letters before the timer runs out — "
+        "you can also host a multiplayer **Word Race** room against alliance mates!"
+    ),
+    "memory": (
+        "Use `/memory` or `/games` to play **Memory Challenge** — watch the color sequence (`🔴 🔵 🟢 🟡 🟣 🟠`) "
+        "and repeat it back as it grows up to 8 steps!"
+    ),
+    "math": (
+        "In **Quick Math** (`/games`), solve as many arithmetic questions as you can in 60 seconds, "
+        "or challenge teammates in a **Quick Math Battle** for speed bonuses!"
+    ),
+    "trivia": (
+        "Play solo **Trivia** or multiplayer **Trivia Battle** via `/games` across 8 categories "
+        "(Science, History, Geography, Gaming, Movies, Sports, Tech, General Knowledge)."
+    ),
+    "rps": (
+        "Play **Rock Paper Scissors** against me or in a 2-player Best of 3 / Best of 5 room using `/games`."
+    ),
+    "number": (
+        "In **Number Guessing** (`/games`), pick a difficulty range and use the HIGHER ⬆️ and LOWER ⬇️ hints to find the secret number."
+    ),
+    "emoji": (
+        "In **Emoji Guessing** (`/games`), figure out the movie, game, animal, food, or phrase shown by the emojis — solo or multiplayer!"
+    ),
+    "higherlower": (
+        "Use `/higherlower` or `/games` and predict whether the next number (1–100) will be higher or lower. "
+        "Cash out anytime to bank your streak!"
+    ),
+    "treasure": (
+        "Use `/treasure` or `/games` to uncover 7 hidden gems on a 3x3 grid while dodging 2 bombs. "
+        "Cash out anytime or go for a Full Clear bonus!"
+    ),
+    "tictactoe": (
+        "Use `/tictactoe` or `/games` to challenge another member to a quick 3x3 **Tic-Tac-Toe** duel."
+    ),
+    "closest": (
+        "Join a **Closest Wins** room via `/games` (2–10 players) — pick a secret number from 1–100 in 20 seconds, and whoever is closest to the target wins!"
+    ),
+    "connect4": (
+        "Use `/connect4` or `/games` to challenge a teammate to a classic 7x6 **Connect 4** match."
+    ),
 }
 
-# fix G: common English words that appear in event titles but shouldn't
-# be used as stand-alone search keys.
+# Casual aliases so players can type "c4", "ttt", "reaction", "4 digit", etc.
+GAME_ALIASES = {
+    "codebreaker": ("codebreaker", "code breaker", "4 digit", "four digit", "mastermind"),
+    "wordle": ("wordle", "wordel", "5 letter"),
+    "quickdraw": ("quickdraw", "quick draw", "reaction", "reaction race", "reaction speed"),
+    "scramble": ("scramble", "word scramble", "word race", "unscramble"),
+    "memory": ("memory", "memory challenge", "color sequence"),
+    "math": ("math", "quick math", "math battle", "arithmetic"),
+    "trivia": ("trivia", "quiz", "trivia battle"),
+    "rps": ("rps", "rock paper scissors", "rock paper"),
+    "number": ("number guess", "number guessing", "guess number", "guess the number"),
+    "emoji": ("emoji", "emoji guess", "emoji guessing"),
+    "higherlower": ("higherlower", "higher lower", "higher or lower", "hi lo", "hilo"),
+    "treasure": ("treasure", "treasure hunt", "gems", "bombs"),
+    "tictactoe": ("tictactoe", "tic tac toe", "ttt", "x and o"),
+    "closest": ("closest", "closest wins"),
+    "connect4": ("connect4", "connect 4", "connect four", "c4"),
+}
+
 _EVENT_NAME_STOPWORDS = {
     "the", "an", "a", "of", "and", "or", "for", "in", "on", "at", "to",
     "next", "upcoming", "new",
 }
 
-# fix J (informational): refined security triggers — "bypass" alone
-# no longer trips the guardrail on innocuous game questions.
-_SECURITY_TRIGGERS = [
-    "make me admin",
-    "give me admin",
-    "grant me admin",
-    "grant permission",
-    "ignore previous",
-    "ignore all previous",
-    "ignore the above",
-    "delete all events",
-    "delete all data",
-    "bypass permission",
-    "bypass admin",
-    "bypass security",
-    "bypass authentication",
-]
+_SECURITY_RE = re.compile(
+    r"\b(?:"
+    r"make\s+me\s+admin|give\s+me\s+admin|grant\s+me\s+admin|grant\s+permission|"
+    r"ignore\s+(?:all\s+)?(?:previous|the\s+above)|forget\s+(?:previous|all)|"
+    r"delete\s+all\s+(?:events|data|rules)|"
+    r"bypass\s+(?:permission|admin|security|authentication)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_CREATOR_RE = re.compile(
+    r"\b(?:"
+    r"who\s+(?:made|built|created|owns|coded|programmed)\s+(?:you|u)|"
+    r"who\s+is\s+(?:your|ur)\s+(?:owner|creator|dev|developer)|"
+    r"who\s+is\s+sam"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_ABOUT_BOT_RE = re.compile(
+    r"\b(?:"
+    r"who\s+(?:are|r)\s+(?:you|u)|"
+    r"(?:tell\s+me\s+)?about\s+(?:yourself|urself|ur\s+self|you|u)|"
+    r"introduce\s+(?:yourself|urself)|"
+    r"what\s+(?:are|r)\s+(?:you|u)|"
+    r"what\s+(?:can|do)\s+(?:you|u)\s+do"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+_KB_STOP = {
+    "how", "to", "what", "who", "can", "is", "are", "the", "a", "an",
+    "for", "in", "on", "of", "do", "i", "my", "me", "tell", "please",
+    "about", "hey", "hi", "explain", "info", "guide", "should", "and",
+    "or", "you", "your", "from", "with",
+}
+
+# Lightweight 15-second TTL cache so MongoDB Atlas isn't hit on every chat message
+_CACHE_TTL_SEC = 15.0
+_events_cache: Tuple[float, List[dict]] = (0.0, [])
+_kb_cache: Tuple[float, List[dict]] = (0.0, [])
+
+
+def invalidate_assistant_caches() -> None:
+    global _events_cache, _kb_cache
+    _events_cache = (0.0, [])
+    _kb_cache = (0.0, [])
+
+
+def _get_cached_upcoming_events() -> List[dict]:
+    global _events_cache
+    now = time.monotonic()
+    if now - _events_cache[0] < _CACHE_TTL_SEC:
+        return _events_cache[1]
+    try:
+        evs = db.get_upcoming_events(include_cancelled=False) or []
+    except Exception as e:
+        print(f"[ASSISTANT] get_upcoming_events failed: {e}")
+        evs = []
+    _events_cache = (now, evs)
+    return evs
+
+
+def _get_cached_knowledge() -> List[dict]:
+    global _kb_cache
+    now = time.monotonic()
+    if now - _kb_cache[0] < _CACHE_TTL_SEC:
+        return _kb_cache[1]
+    try:
+        items = db.list_knowledge() or []
+    except Exception as e:
+        print(f"[ASSISTANT] list_knowledge failed: {e}")
+        items = []
+    _kb_cache = (now, items)
+    return items
 
 
 def _parse_iso_utc(raw_value: Optional[str]) -> Optional[datetime]:
-    """
-    fix I: robust ISO-8601 parser.
-    Handles trailing `Z` (fails on Python ≤ 3.10 with fromisoformat) and
-    naive timestamps (assumed UTC).
-    """
     if not raw_value:
         return None
     s = str(raw_value).strip()
     if not s:
         return None
-    # Replace trailing `Z` with explicit +00:00 (works on all Python 3.x)
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     try:
@@ -90,10 +200,6 @@ def _parse_iso_utc(raw_value: Optional[str]) -> Optional[datetime]:
 
 
 def _format_event(ev: dict, tz_off: float) -> Optional[str]:
-    """
-    fix C + H: safely render a single event line.
-    Returns None if the event data is malformed.
-    """
     try:
         name = (ev.get("name") or "").strip()
         if not name:
@@ -109,70 +215,143 @@ def _format_event(ev: dict, tz_off: float) -> Optional[str]:
         desc = ev.get("description")
         desc_note = f"\n📝 *{desc}*" if desc else ""
         return (
-            f"The next **{name}** is scheduled for **{dual['game_time_short']} game time** "
-            f"(**{dual['india_time_short']} India time**) on **{dual['short_date']}** "
-            f"({dual['discord_relative']}).{desc_note}"
+            f"The next **{name}** is on **{dual['short_date']}** at **{dual['game_time_short']} game time** "
+            f"(**{dual['india_time_short']} India time**, {dual['discord_relative']}).{desc_note}"
         )
     except Exception as e:
         print(f"[ASSISTANT] _format_event failed: {e}")
         return None
 
 
+def _match_haven_game(q_low: str, tokens: set) -> Optional[Tuple[str, str]]:
+    """Match any of Haven Bot's Discord games by name or casual alias."""
+    for g_key, aliases in GAME_ALIASES.items():
+        for alias in aliases:
+            if " " in alias:
+                if alias in q_low:
+                    return (g_key, GAME_EXPLANATIONS[g_key])
+            else:
+                if alias in tokens:
+                    return (g_key, GAME_EXPLANATIONS[g_key])
+    return None
+
+
 def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
     """
-    Read-only, deterministic alliance assistant.
-    Never mutates state or grants permissions (Part 8.3).
+    Fast, friendly, read-only Haven Alliance Assistant.
+    Instant zero-DB fast path for greetings, games, identity, & security;
+    TTL-cached DB reads for event timings, rules, & custom /knowledge entries.
     """
     short = get_alliance_short()
     q = (raw_query or "").strip()
     q_low = q.lower()
-    _SYNONYMS = {
-        "euipment": "equipment", "equip": "equipment", "eq": "equipment", "gear": "equipment",
-        "lvl": "level", "lv": "level", "fc": "forticlad", "wo": "office",
-        "cc": "crystal clash", "ut": "ultimate trial", "cage": "ultimate trial",
-        "urself": "yourself", "ur": "your", "u": "you", "r": "are",
-        "ref": "reformation", "reform": "reformation", "heros": "heroes",
-        "troop": "troops", "brawl": "alliance brawl", "svs": "svs supreme honor", "riots": "riot", "shields": "shield", "join": "joiner joiners",
-    }
-    raw_tokens = re.findall(r"[a-z0-9]+", q_low)
+    raw_tokens = _TOKEN_RE.findall(q_low)
     tokens = set(raw_tokens)
-    for t in raw_tokens:
-        if t in _SYNONYMS:
-            tokens.update(_SYNONYMS[t].split())
 
-    # 1. Security guardrail
-    if any(p in q_low for p in _SECURITY_TRIGGERS):
+    # 1. Security guardrail (0ms local)
+    if _SECURITY_RE.search(q_low):
         return (
             "🔒 Security Policy",
-            "I am a read-only Alliance Assistant and cannot grant permissions or execute administrative actions. "
-            "Administrative actions require authorized slash commands with backend role verification.",
+            "Nice try, haha — I'm read-only, so I can't grant admin permissions or delete anything. Only authorized admins can do that with slash commands.",
         )
 
-    # 2. Event scheduling permissions
+    # 2. Casual greetings & small talk (0ms local)
+    if len(raw_tokens) <= 2 and (tokens & {"hi", "hello", "hey", "yo", "hola", "sup"}):
+        return (
+            f"🛡️ {short} Bot",
+            "Hey! Ask me about upcoming **event timings**, **how to play** any game on `/games`, or **alliance rules**!",
+        )
+    if len(raw_tokens) <= 5 and (tokens & {"thanks", "thank", "ty", "thx", "tysm"}):
+        return (
+            f"🛡️ {short} Bot",
+            "Anytime! Ping me whenever you need an event time or game rules 💪",
+        )
+    if len(raw_tokens) <= 4 and any(p in q_low for p in ("good bot", "nice bot", "awesome bot", "great job")):
+        return (
+            f"🛡️ {short} Bot",
+            f"Appreciate it! Always here to help **Haven ({short})**.",
+        )
+    if len(raw_tokens) <= 3 and (tokens & {"bye", "goodbye", "cya", "gn", "goodnight"}):
+        return (
+            f"👋 {short} Bot",
+            "Catch you later! Check `/events` before you hop off so you don't miss anything.",
+        )
+
+    # 3. Bot identity & creator (0ms local)
+    if _CREATOR_RE.search(q_low):
+        return (
+            "👑 Creator — Sam (Server 201)",
+            f"**Sam** from **Server 201** built me for **Haven ({short})**! If you spot a bug or want a new feature, just ping Sam or use the Report Bug button.",
+        )
+    if _ABOUT_BOT_RE.search(q_low):
+        return (
+            f"🛡️ {short} Bot",
+            f"Hey! I'm **{short} Bot**, built by **Sam** for **Haven ({short})** on **Server 201**.\n"
+            "I can tell you upcoming **event timings** (Game Time + IST), explain **how to play any game** on `/games`, and share **alliance rules** (`/rules view`)!",
+        )
+    if any(p in q_low for p in ("which server", "what server", "our server", "server 201")):
+        return (
+            f"🌐 Haven ({short}) — Server 201",
+            f"We're **Haven ({short})** on **Server 201**!",
+        )
+
+    # 4. Event scheduling permissions (0ms local)
     if ("event" in q_low or "schedule" in q_low) and any(
         w in q_low
-        for w in ["can i", "how do i create", "who can", "schedule an", "make an", "create an", "modify"]
+        for w in ("can i", "how do i create", "who can", "schedule an", "make an", "create an", "modify", "add an")
     ):
         return (
-            "📅 Event Scheduling Permissions",
-            "Only authorized administrators can schedule or modify events. You can view upcoming events at any time using `/events`.",
+            "📅 Event Permissions",
+            "Only authorized alliance admins (and **Sam**) can create or edit events, but anyone can check upcoming times anytime using `/events`!",
         )
 
-    # 3. Timezone — fix A
+    # 5. How to play a specific Haven Bot game (0ms local)
+    matched_game = _match_haven_game(q_low, tokens)
+    if matched_game:
+        g_key, g_exp = matched_game
+        return (f"🎮 How to Play — {g_key.title()}", g_exp)
+
+    # 6. General games list (0ms local)
+    if any(w in tokens for w in ("games", "game", "play", "arena", "minigame", "minigames")):
+        return (
+            f"🎮 {short} Gaming Arena",
+            f"Run `/games` to open the **{short} Gaming Arena**! You can play **12 solo games** "
+            "(Wordle Daily & Practice, Higher or Lower, Treasure Hunt, Word Scramble, Memory Challenge, Quick Math, Reaction Speed Test, Trivia, RPS, Number Guessing, Emoji Guessing) "
+            "or **multiplayer rooms** (Tic-Tac-Toe, Connect 4, Codebreaker, Closest Wins, Reaction Race, Word Race, Quick Math Battle, Trivia Battle, RPS, Emoji Guessing). "
+            "Ask me *\"how to play Wordle\"* or any game name for quick rules!",
+        )
+
+    # 7. Alliance rules
+    if any(w in tokens for w in ("rule", "rules")):
+        try:
+            rules_text = db.get_formatted_rules()
+        except Exception as e:
+            print(f"[ASSISTANT] get_formatted_rules failed: {e}")
+            rules_text = "Alliance rules are currently unavailable right now — try `/rules view` in a moment."
+        return (f"📜 {short} Alliance Rules", rules_text)
+
+    # 8. Timezone & cached upcoming events
     try:
         tz_off = float(db.get_config("game_tz_offset", str(DEFAULT_TZ_OFFSET)))
-    except Exception as e:
-        print(f"[ASSISTANT] tz config read failed: {e}")
+    except Exception:
         tz_off = float(DEFAULT_TZ_OFFSET)
 
-    # 4. Upcoming events — fix A
-    try:
-        upcoming = db.get_upcoming_events(include_cancelled=False) or []
-    except Exception as e:
-        print(f"[ASSISTANT] get_upcoming_events failed: {e}")
-        upcoming = []
+    # 9. Help / commands
+    if len(tokens) <= 5 and (tokens & {"help", "commands", "command"}):
+        tz_label = format_tz_label(tz_off)
+        return (
+            f"🛡️ {short} Bot Commands",
+            f"Here's what you can use anytime:\n"
+            f"• `/games` — Play all 22 solo & multiplayer games\n"
+            f"• `/events` — Check upcoming alliance events in Game Time (`{tz_label}`) & India Time (`IST`)\n"
+            "• `/rules view` — Read the Haven alliance rules\n"
+            "• `/profile` & `/leaderboard` — Check your game stats & rankings\n"
+            "• `/help` — Full command list",
+        )
 
-    # 5. Check specific event by name — fix G + H
+    upcoming = _get_cached_upcoming_events()
+
+    # 10. Specific upcoming event by name
     for ev in upcoming:
         try:
             ev_name = (ev.get("name") or "").strip()
@@ -180,178 +359,61 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
                 continue
             ev_name_low = ev_name.lower()
             ev_words = {
-                w for w in re.findall(r"[a-z0-9]+", ev_name_low)
+                w for w in _TOKEN_RE.findall(ev_name_low)
                 if len(w) >= 3 and w not in _EVENT_NAME_STOPWORDS
             }
-            name_in_query = ev_name_low in q_low
-            words_in_query = bool(ev_words) and any(w in tokens for w in ev_words)
-            if not (name_in_query or words_in_query):
-                continue
-            rendered = _format_event(ev, tz_off)
-            if rendered:
-                return (f"📅 Upcoming Event — {ev_name}", rendered)
+            if ev_name_low in q_low or (ev_words and any(w in tokens for w in ev_words)):
+                rendered = _format_event(ev, tz_off)
+                if rendered:
+                    return (f"📅 Upcoming Event — {ev_name}", rendered)
         except Exception as e:
             print(f"[ASSISTANT] event name match failed: {e}")
             continue
 
-    # 6. General "when / upcoming" listing
-    if any(w in tokens for w in ["event", "events", "schedule", "upcoming", "next", "surge", "brawl", "svs"]) and not re.search(r"\b(?:day|d)\s*[1-5]\b", q_low) and "prep" not in tokens and "preparation" not in tokens:
-        if any(w in tokens for w in ["when", "next", "upcoming", "schedule", "events", "time"]):
-            if not upcoming:
-                return (
-                    f"📅 Upcoming {short} Events",
-                    "There are currently no upcoming events scheduled in the database. Check `/events` later for updates!",
-                )
-            lines = []
-            for ev in upcoming[:4]:
-                try:
-                    dt = _parse_iso_utc(ev.get("start_time_utc"))
-                    if not dt:
-                        continue
-                    try:
-                        dual = format_dual_timestamps(dt, tz_off)
-                    except Exception as e:
-                        print(f"[ASSISTANT] format_dual_timestamps failed: {e}")
-                        continue
-                    lines.append(
-                        f"• **{ev.get('name', '?')}** — `{dual['short_date']}` at "
-                        f"**`{dual['game_time_short']} game time`** "
-                        f"(`{dual['india_time_short']} India time`) · {dual['discord_relative']}"
-                    )
-                except Exception as e:
-                    print(f"[ASSISTANT] upcoming-list render failed: {e}")
+    # 11. General upcoming events / timings
+    if any(w in tokens for w in ("event", "events", "schedule", "upcoming", "timing", "timings", "surge", "brawl", "svs")):
+        if not upcoming:
+            return (
+                f"📅 Upcoming {short} Events",
+                "There are no upcoming events scheduled right now — check `/events` later for updates!",
+            )
+        lines = []
+        for ev in upcoming[:5]:
+            try:
+                dt = _parse_iso_utc(ev.get("start_time_utc"))
+                if not dt:
                     continue
-            if not lines:
-                return (
-                    f"📅 Upcoming {short} Events",
-                    "There are currently no upcoming events scheduled in the database. Check `/events` later for updates!",
+                dual = format_dual_timestamps(dt, tz_off)
+                lines.append(
+                    f"• **{ev.get('name', '?')}** — {dual['short_date']} at "
+                    f"**{dual['game_time_short']} game time** "
+                    f"({dual['india_time_short']} IST · {dual['discord_relative']})"
                 )
-            return (f"📅 Upcoming {short} Events", "\n".join(lines))
-
-    # 7. Game instructions
-    for g_key, g_exp in GAME_EXPLANATIONS.items():
-        if g_key in q_low:
-            return (f"🎮 How to Play — {g_key.title()}", g_exp)
-
-    _LOJ_HINT_WORDS = {
-        "jail", "loj", "hero", "heroes", "troop", "troops", "gorilla", "tyron", "tyronn",
-        "wukong", "ada", "phoenix", "inata", "jasser", "barry", "patrick", "whisper",
-        "lunarl", "veronica", "koschevoi", "sawyer", "ryuichi", "equipment", "gear",
-        "firearms", "vest", "cuffs", "diamond", "diamonds", "code", "codes",
-        "redeem", "warehouse", "inventory", "power", "camp", "training", "inmate", "inmates",
-        "rally", "joiner", "joiners", "leader", "leaders", "garrison", "plunder", "shield",
-        "city", "hall", "prison", "warden", "office", "lineup", "squad", "ratio", "ratios",
-        "dice", "brawl", "gasoline", "cosmos", "cosmic", "satellite", "satellites",
-        "overclock", "trial", "cage", "scarlet", "butcher", "crystal", "clash",
-        "sandsea", "dreadwaker", "overlord", "forticlad", "barracks", "medical",
-        "factory", "riot", "svs", "honor", "haven", "island",
-    }
-    if any(w in tokens for w in ["games", "game", "play", "arena"]) and not (tokens & _LOJ_HINT_WORDS):
+            except Exception:
+                continue
+        if not lines:
+            return (
+                f"📅 Upcoming {short} Events",
+                "There are no upcoming events scheduled right now — check `/events` later!",
+            )
         return (
-            f"🎮 {short} Gaming Arena",
-            f"Use `/games` to open the **{short} Gaming Arena**! You can play 12 Single-Player games "
-            "(Higher or Lower, Treasure Hunt, Wordle Daily & Practice, Word Scramble, Memory Challenge, Quick Math, Reaction Speed Test, Trivia, RPS, Number Guessing, Emoji Guessing) "
-            "or host Multiplayer rooms (Tic-Tac-Toe, Closest Wins, Four-Digit Codebreaker, Reaction Race, Word Race, Quick Math Battle, Trivia Battle, RPS, Emoji Guessing, Connect 4).",
+            f"📅 Upcoming {short} Events",
+            "Here are the next scheduled alliance events:\n" + "\n".join(lines),
         )
 
-    # 8. Alliance rules — fix A
-    if any(w in tokens for w in ["rule", "rules"]) and not (tokens & {"crystal", "clash", "svs", "supreme", "honor", "joiner", "joiners", "rally", "trial", "cage", "sandsea", "dreadwaker"}):
-        try:
-            rules_text = db.get_formatted_rules()
-        except Exception as e:
-            print(f"[ASSISTANT] get_formatted_rules failed: {e}")
-            rules_text = "Alliance rules are currently unavailable. Please try again later."
-        return (f"📜 {short} Alliance Rules", rules_text)
-
-    # 11. Help
-    if len(tokens) <= 4 and (tokens & {"help", "commands", "command"}):
-        tz_label = format_tz_label(tz_off)
-        return (
-            f"🛡️ {short} Bot Commands",
-            f"• `/games` — Open the {short} Gaming Arena\n"
-            f"• `/events` — View upcoming events in Game Time (`{tz_label}`) & India Time (`IST`)\n"
-            "• `/rules view` — View official alliance rules\n"
-            "• `/profile` & `/leaderboard` — Check player stats, match history, and rankings\n"
-            "• `/help` — Full command guide",
-        )
-
-    # 10a. Bot identity & creator (Sam — Server 201)
-    _CREATOR_PHRASES = (
-        "who made you", "who made u", "who built you", "who built u",
-        "who created you", "who created u", "who is your owner", "who is ur owner",
-        "who is your creator", "who is your dev", "who is your developer",
-        "who owns you", "who owns u", "who coded you", "who coded u",
-        "who programmed you", "who is sam",
-    )
-    _ABOUT_BOT_PHRASES = (
-        "who are you", "who are u", "who r u", "who r you",
-        "tell me about yourself", "tell me about ur self", "tell me about urself",
-        "about yourself", "about urself", "about ur self", "about you", "about u",
-        "introduce yourself", "introduce urself", "what are you", "what are u",
-        "what r u", "what can you do", "what can u do", "what do you do",
-    )
-    if any(re.search(rf"\b{re.escape(p)}\b", q_low) for p in _CREATOR_PHRASES):
-        return (
-            f"👑 Creator — Sam (Server 201)",
-            f"I was built by **Sam** from **Server 201** for the **Haven ({short})** alliance in **Lands of Jail**!\n"
-            f"If you ever spot a bug or want a new feature, just ping **Sam** or use the **Report Bug** button.",
-        )
-
-    if any(re.search(rf"\b{re.escape(p)}\b", q_low) for p in _ABOUT_BOT_PHRASES):
-        return (
-            f"🛡️ I'm {short} Bot — Haven Alliance Assistant",
-            f"Hey! I'm **{short} Bot**, the official Discord bot for the **Haven ({short})** alliance on **Server 201** in **Lands of Jail**, built by **Sam** (Server 201).\n\n"
-            "Here's what I can help you with:\n"
-            "• **Lands of Jail Guides** — Ask me about heroes, rally leaders/joiners, Trial Cage, SvS prep days, Crystal Clash, Cosmos Hub, buildings, or gift codes\n"
-            "• **Alliance Events & Rules** — Check `/events` (Game Time + IST) or `/rules view`\n"
-            "• **22 Alliance Games** — Play solo or multiplayer anytime with `/games`",
-        )
-
-    if any(p in q_low for p in ("which server", "what server", "our server", "server 201")) and "svs" not in tokens:
-        return (
-            f"🌐 Haven ({short}) — Server 201",
-            f"We're the **Haven ({short})** alliance on **Server 201** in **Lands of Jail** (bot built by **Sam**).",
-        )
-
-    # 10. Greetings
-    if len(raw_tokens) <= 2 and (set(raw_tokens) & {"hi", "hello", "hey", "yo", "hola", "sup"}):
-        return (
-            f"🛡️ {short} Alliance Assistant",
-            f"Hey! I'm **{short} Bot** (built by **Sam** for **Haven** on **Server 201**). Ask me about **Lands of Jail** (heroes, Trial Cage, SvS, Crystal Clash, buildings), upcoming events, "
-            f"alliance rules, strategies, or how to play any {short} game — or use `/games`, `/events`, and `/help`.",
-        )
-
-    # 8b. Lands of Jail exact upgrade calculators, hero directory, SvS days & buff pricing
-    try:
-        loj_ans = answer_loj_structured_query(q)
-        if loj_ans is not None:
-            return loj_ans
-    except Exception as e:
-        print(f"[ASSISTANT] loj_calculator failed: {e}")
-
-    # 9. Knowledge Base search — fix A
-    try:
-        kb_items = db.list_knowledge() or []
-    except Exception as e:
-        print(f"[ASSISTANT] list_knowledge failed: {e}")
-        kb_items = []
-
+    # 12. Custom Knowledge Base entries (added/edited by admins via /knowledge)
+    kb_items = _get_cached_knowledge()
     best_item = None
     best_score = 0.0
+    q_meaningful = {t for t in tokens if t not in _KB_STOP} or tokens
+
     for item in kb_items:
         try:
             haystack = (
                 f"{item.get('key', '')} {item.get('title', '')} "
                 f"{item.get('category', '')} {item.get('keywords', '')}"
             ).lower()
-            hay_tokens = set(re.findall(r"[a-z0-9]+", haystack))
-            _KB_STOP = {
-                "how", "to", "what", "who", "can", "is", "are", "the", "a", "an",
-                "for", "in", "on", "of", "do", "i", "my", "me", "tell", "please",
-                "about", "hey", "hi", "explain", "info", "guide", "should", "and",
-                "or", "you", "your", "from", "with", "much", "many", "get", "lands", "jail",
-            }
-            q_meaningful = {t for t in tokens if t not in _KB_STOP} or tokens
+            hay_tokens = set(_TOKEN_RE.findall(haystack))
             h_meaningful = {t for t in hay_tokens if t not in _KB_STOP} or hay_tokens
             overlap = len(q_meaningful & h_meaningful)
             seq_ratio = difflib.SequenceMatcher(
@@ -364,36 +426,29 @@ def answer_alliance_query(raw_query: str) -> Tuple[str, str]:
             if score > best_score:
                 best_score = score
                 best_item = item
-        except Exception as e:
-            print(f"[ASSISTANT] KB score failed: {e}")
+        except Exception:
             continue
 
-    if best_item and best_score >= 1.6:
+    if best_item and best_score >= 2.0:
         return (
-            f"📘 {best_item.get('title', '?')} ({best_item.get('category', '?')})",
+            f"📘 {best_item.get('title', '?')}",
             best_item.get("content", ""),
         )
 
-    # 12. Honest fallback
+    # 13. Clean, friendly fallback
     return (
-        f"🤖 {short} Alliance Assistant",
-        "I don't have approved alliance information matching that specific question right now. "
-        "You can ask me about:\n"
-        "• **Upcoming Events** (*\"When is the next Surge?\"*)\n"
-        "• **Alliance Rules & Guides** (*\"What are the alliance rules?\"*)\n"
-        "• **How to Play Games** (*\"How do I play Codebreaker?\"*)\n"
-        "Or type `/help`, `/events`, or `/games` to browse directly!",
+        f"🤖 {short} Bot",
+        "I mostly help with **event timings**, **how to play Haven Bot games**, and **alliance rules**! Try asking:\n"
+        "• *\"When is the next event?\"* (or `/events`)\n"
+        "• *\"How do I play Wordle?\"* / *\"How to play Codebreaker?\"* (or `/games`)\n"
+        "• *\"What are the alliance rules?\"* (or `/rules view`)",
     )
-
 
 
 async def knowledge_key_autocomplete(
     interaction: discord.Interaction, current: str
 ) -> List[app_commands.Choice[str]]:
-    try:
-        items = db.list_knowledge()
-    except Exception:
-        return []
+    items = _get_cached_knowledge()
     q = (current or "").strip().lower()
     choices = []
     for item in items:
@@ -410,25 +465,25 @@ async def knowledge_key_autocomplete(
 class KnowledgeModal(discord.ui.Modal):
     key_input = discord.ui.TextInput(
         label="Unique Topic Key",
-        placeholder="e.g., surge_strategy",
+        placeholder="e.g., surge_timing",
         max_length=40,
         required=True,
     )
     title_input = discord.ui.TextInput(
         label="Title",
-        placeholder="e.g., Surge Rally Strategy",
+        placeholder="e.g., Surge Event Info",
         max_length=80,
         required=True,
     )
     category_input = discord.ui.TextInput(
-        label="Category (FAQ, Guides, Events, Strategy)",
-        placeholder="Strategy",
+        label="Category (FAQ, Guides, Events, Games)",
+        placeholder="Events",
         max_length=30,
         required=True,
     )
     keywords_input = discord.ui.TextInput(
         label="Search Keywords (space-separated)",
-        placeholder="surge rally troop formation leader",
+        placeholder="surge event timing reinforce",
         max_length=120,
         required=False,
     )
@@ -450,7 +505,6 @@ class KnowledgeModal(discord.ui.Modal):
             self.content_input.default = existing["content"]
 
     async def on_submit(self, interaction: discord.Interaction):
-        # fix D: guard the whole flow so the user always gets a response.
         try:
             if not await ensure_admin(interaction):
                 return
@@ -463,8 +517,8 @@ class KnowledgeModal(discord.ui.Modal):
                 keywords=self.keywords_input.value or "",
                 actor_id=interaction.user.id,
             )
+            invalidate_assistant_caches()
 
-            # fix F: audit log is fire-and-forget.
             try:
                 db.log_audit(
                     interaction.user.id,
@@ -494,7 +548,7 @@ class KnowledgeModal(discord.ui.Modal):
 
 
 class DMHandler(commands.Cog):
-    """Part 8: Alliance AI Assistant (DMs + Configured Alliance Channels) and /knowledge management."""
+    """Part 8: Haven Alliance Assistant (DMs + Configured Alliance Channels) and /knowledge management."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -503,7 +557,6 @@ class DMHandler(commands.Cog):
         self._mention_cooldowns: dict = {}
 
     def _is_assistant_channel(self, channel_id: int) -> bool:
-        # O(1) cached lookup; only re-parses JSON when server_config changes.
         try:
             raw = db.get_config("assistant_channels", "[]")
             if raw != self._assistant_raw_cache:
@@ -519,12 +572,10 @@ class DMHandler(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        # fix K: also bail on whitespace-only.
         if not message.content or not message.content.strip():
             return
         if message.content.startswith(("/", "!")):
             return
-        # Never interrupt active chat-input games (Wordle, Scramble, Quick Math, etc.) in DMs or channels.
         if (
             owner_stealth.was_handled(message.id)
             or chat_input_manager.has_active_session(message.channel.id, message.author.id)
@@ -542,7 +593,6 @@ class DMHandler(commands.Cog):
                     or any(getattr(u, "id", None) == self.bot.user.id for u in message.mentions)
                 )
             )
-            # Also catch when a member @mentions the bot's auto-created managed role in a server channel
             is_role_mentioned = False
             if not is_dm and message.guild and message.role_mentions:
                 me = message.guild.me
@@ -588,29 +638,36 @@ class DMHandler(commands.Cog):
         if not clean_text:
             clean_text = "help"
 
-        # fix A: guard the whole query pipeline.
+        # Run off the main asyncio event loop so DB reads never stutter active games
         try:
-            title, answer = answer_alliance_query(clean_text)
+            title, answer = await asyncio.to_thread(answer_alliance_query, clean_text)
         except Exception as e:
             print(f"[ASSISTANT] answer_alliance_query failed: {type(e).__name__}: {e}")
             traceback.print_exc()
-            title = f"⚠️ {get_alliance_short()} Alliance Assistant"
-            answer = "Sorry, something went wrong processing your question. Please try again in a moment."
+            title = f"⚠️ {get_alliance_short()} Bot"
+            answer = "Oops, something went wrong — mind asking that again in a second?"
 
-        embed = hav_embed(
-            title=title,
-            description=answer,
-            color=HAVColors.ARENA,
-            footer_extra=f"{get_alliance_short()} Alliance Assistant",
-        )
+        use_embed = title.startswith("📜")
         try:
-            if not is_dm:
-                await message.reply(embed=embed, mention_author=False)
+            if use_embed:
+                embed = hav_embed(
+                    title=title,
+                    description=answer,
+                    color=HAVColors.ARENA,
+                    footer_extra=f"{get_alliance_short()} Alliance Assistant",
+                )
+                if not is_dm:
+                    await message.reply(embed=embed, mention_author=False)
+                else:
+                    await message.channel.send(embed=embed)
             else:
-                await message.channel.send(embed=embed)
+                if not is_dm:
+                    await message.reply(content=answer[:1950], mention_author=False)
+                else:
+                    await message.channel.send(content=answer[:1950])
         except Exception:
             try:
-                await message.channel.send(embed=embed)
+                await message.channel.send(content=answer[:1950])
             except Exception as e:
                 print(f"[ASSISTANT] Failed to send reply: {e}")
 
@@ -618,7 +675,7 @@ class DMHandler(commands.Cog):
 
     knowledge_group = app_commands.Group(
         name="knowledge",
-        description="Manage the approved Alliance Knowledge Base for the AI Assistant",
+        description="Manage custom Haven Alliance Knowledge Base entries",
     )
 
     @knowledge_group.command(name="add", description="Add a new entry to the Alliance Knowledge Base (Admin/Owner only)")
@@ -637,7 +694,6 @@ class DMHandler(commands.Cog):
     async def knowledge_edit_cmd(self, interaction: discord.Interaction, key: str):
         if not await ensure_admin(interaction):
             return
-        # fix E: DB call guarded.
         try:
             existing = db.get_knowledge(key)
         except Exception as e:
@@ -663,9 +719,10 @@ class DMHandler(commands.Cog):
     async def knowledge_remove_cmd(self, interaction: discord.Interaction, key: str):
         if not await ensure_admin(interaction):
             return
-        # fix E: DB call guarded.
         try:
             ok = db.remove_knowledge(key)
+            if ok:
+                invalidate_assistant_caches()
         except Exception as e:
             print(f"[ASSISTANT] remove_knowledge failed: {e}")
             return await interaction.response.send_message(
@@ -676,7 +733,6 @@ class DMHandler(commands.Cog):
             return await interaction.response.send_message(
                 f"❌ Knowledge entry `{key}` was not found.", ephemeral=True
             )
-        # fix F: audit log is fire-and-forget.
         try:
             db.log_audit(interaction.user.id, "knowledge_remove", f"Removed knowledge key '{key}'")
         except Exception as e:
@@ -687,9 +743,8 @@ class DMHandler(commands.Cog):
         )
 
     @knowledge_group.command(name="list", description="List all approved entries in the Alliance Knowledge Base")
-    @app_commands.describe(category="Optional category filter (e.g., Events, Strategy, Guides, FAQ)")
+    @app_commands.describe(category="Optional category filter (e.g., Events, Games, Guides, FAQ)")
     async def knowledge_list_cmd(self, interaction: discord.Interaction, category: Optional[str] = None):
-        # fix E: DB call guarded.
         try:
             items = db.list_knowledge(category=category)
         except Exception as e:
