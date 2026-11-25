@@ -4,6 +4,7 @@ import traceback
 import discord
 from collections.abc import Callable
 from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, OWNER_ID, HAVColors
+from core.database import db
 from core.permissions import ensure_session_player
 
 def get_alliance_short() -> str:
