@@ -19,14 +19,9 @@ from core.config import (
 
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 
-DEFAULT_RULES_LIST = [
-    "Respect all alliance members and keep chat welcoming.",
-    "Participate actively in scheduled Alliance Brawls, Surge, and SVS events.",
-    "No spamming, toxicity, or unnecessary drama in alliance channels.",
-    "Follow event instructions from alliance leadership and have fun as a team!",
-]
+from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES, DEFAULT_RULES_LIST
 
-from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES
+MAX_BACKUPS_TO_KEEP = 10
 
 def _utc_now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -51,6 +46,8 @@ class MongoDatabase:
             mongo_uri,
             serverSelectionTimeoutMS=10000,
             connectTimeoutMS=10000,
+            maxPoolSize=20,
+            appName="haven_bot",
             retryWrites=True,
         )
         # Verify connectivity early on real MongoClient
@@ -748,9 +745,11 @@ class MongoDatabase:
         return self.update_event(event_id, repeat_days=max(0, min(365, int(repeat_days))))
 
     def mark_reminder_sent(self, event_id: str):
+        ev = self.get_event(event_id)
+        target_id = ev["id"] if ev else event_id.strip()
         with self._lock:
             self._events.update_one(
-                {"id": event_id},
+                {"id": target_id},
                 {"$set": {"reminder_sent": 1, "updated_at": _utc_now_str()}},
             )
 
@@ -915,4 +914,21 @@ class MongoDatabase:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(dump, f, indent=2, ensure_ascii=False, default=str)
             os.replace(tmp_path, dest)
+            try:
+                files = sorted(
+                    (
+                        os.path.join(BACKUP_DIR, fn)
+                        for fn in os.listdir(BACKUP_DIR)
+                        if fn.startswith("haven_mongo_backup_") and not fn.endswith(".tmp")
+                    ),
+                    key=os.path.getmtime,
+                    reverse=True,
+                )
+                for stale in files[MAX_BACKUPS_TO_KEEP:]:
+                    try:
+                        os.remove(stale)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
         return dest

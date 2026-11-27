@@ -6,13 +6,14 @@ Lets players simply type their guesses/answers as normal Discord messages
 (in both server channels and DMs) — just like popular Discord game bots —
 instead of clicking buttons to open modal popups on every turn.
 """
-import asyncio
 import time
 import traceback
 from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 
 import discord
+
+from core.logger import log
 
 # Handler signature: async def handler(message: discord.Message) -> bool
 # Return True if the message was consumed by the game session.
@@ -51,7 +52,6 @@ class ChatInputManager:
     def __init__(self):
         self._sessions: dict[str, ChatInputSession] = {}
         self._consumed_messages: dict[int, float] = {}
-        self._lock = asyncio.Lock()
 
     def _purge_expired(self) -> None:
         now = time.time()
@@ -180,9 +180,12 @@ class ChatInputManager:
                     self.mark_consumed(message.id)
                     return True
             except Exception as e:
-                print(
-                    f"[CHAT_INPUT] Session '{sess.session_id}' ({sess.game_name}) error: "
-                    f"{type(e).__name__}: {e}"
+                log.error(
+                    "ChatInput session '%s' (%s) error: %s: %s",
+                    sess.session_id,
+                    sess.game_name,
+                    type(e).__name__,
+                    e,
                 )
                 traceback.print_exc()
         return False

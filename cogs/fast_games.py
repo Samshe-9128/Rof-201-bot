@@ -449,6 +449,7 @@ class TreasureHuntView(discord.ui.View):
             return
         self.finished = True
         owner_stealth.unregister_game(self._stealth_id)
+        room_manager.unregister_solo_view(self.user.id, "treasure", self)
         _disable_all(self)
         if self.message:
             try:
@@ -651,7 +652,7 @@ class ClosestWinsModal(discord.ui.Modal, title="🎯 Closest Wins — Enter Numb
 
     async def on_submit(self, interaction: discord.Interaction):
         raw = self.guess_input.component.value.strip()
-        if not raw.isdigit() or not (1 <= int(raw) <= 100):
+        if not (raw.isascii() and raw.isdigit()) or not (1 <= int(raw) <= 100):
             return await interaction.response.send_message(
                 "❌ Enter a valid whole number between **1** and **100**.", ephemeral=True
             )
@@ -799,9 +800,9 @@ class ClosestWinsView(discord.ui.View):
 
     async def on_timeout(self):
         if not self.finished:
-            self.finished = True
-            owner_stealth.unregister_game(self._stealth_id)
-            _disable_all(self)
+            async with self._lock:
+                if not self.finished:
+                    await self._finish()
 
 class FastGames(commands.Cog):
     """Fast, low-latency interactive Discord games (Single & Multiplayer)."""
@@ -814,7 +815,7 @@ class FastGames(commands.Cog):
         room_manager.register_solo_view(interaction.user.id, "higherlower", view)
         embed = view.build_embed()
         if interaction.response.is_done():
-            msg = await interaction.followup.send(embed=embed, view=view)
+            msg = await interaction.followup.send(embed=embed, view=view, wait=True)
         else:
             await interaction.response.send_message(embed=embed, view=view)
             try:
@@ -830,7 +831,7 @@ class FastGames(commands.Cog):
         room_manager.register_solo_view(interaction.user.id, "treasure", view)
         embed = view.build_embed()
         if interaction.response.is_done():
-            msg = await interaction.followup.send(embed=embed, view=view)
+            msg = await interaction.followup.send(embed=embed, view=view, wait=True)
         else:
             await interaction.response.send_message(embed=embed, view=view)
             try:
@@ -845,7 +846,7 @@ class FastGames(commands.Cog):
         existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
-                f"⚠️ You are already in an active Tic-Tac-Toe room (`{existing.room_id}`).",
+                f"⚠️ You are already in an active **{existing.game_title}** room (`{existing.room_id}`). Leave or finish that room first!",
                 ephemeral=True,
             )
         room = room_manager.create_room("tictactoe", "Tic-Tac-Toe", interaction.user, min_players=2, max_players=2)
@@ -879,7 +880,7 @@ class FastGames(commands.Cog):
         existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
-                f"⚠️ You are already in an active Closest Wins room (`{existing.room_id}`).",
+                f"⚠️ You are already in an active **{existing.game_title}** room (`{existing.room_id}`). Leave or finish that room first!",
                 ephemeral=True,
             )
         room = room_manager.create_room("closest_wins", "Closest Wins", interaction.user, min_players=2, max_players=10)
@@ -913,14 +914,17 @@ class FastGames(commands.Cog):
 
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.command(name="tictactoe", description="Start a fast 2-player Tic-Tac-Toe duel")
+    @app_commands.checks.cooldown(1, 3.0)
     async def tictactoe_cmd(self, interaction: discord.Interaction):
         await self.open_tictactoe_room(interaction)
 
     @app_commands.command(name="higherlower", description="Play a fast Higher or Lower number streak game")
+    @app_commands.checks.cooldown(1, 3.0)
     async def higherlower_cmd(self, interaction: discord.Interaction):
         await self.start_higher_lower(interaction)
 
     @app_commands.command(name="treasure", description="Play fast 3x3 Treasure Hunt (avoid the 2 bombs!)")
+    @app_commands.checks.cooldown(1, 3.0)
     async def treasure_cmd(self, interaction: discord.Interaction):
         await self.start_treasure_hunt(interaction)
 

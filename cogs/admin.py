@@ -1,5 +1,6 @@
 # cogs/admin.py
 import json
+import os
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -239,7 +240,7 @@ class Admin(commands.Cog):
             dest = db.create_backup()
             db.log_audit(interaction.user.id, "db_backup", f"Created DB backup {dest}")
             return await interaction.response.send_message(
-                f"💾 Database backup created safely (`{dest.split('/')[-1]}`).", ephemeral=True
+                f"💾 Database backup created safely (`{os.path.basename(dest)}`).", ephemeral=True
             )
 
         admins = db.get_admins()

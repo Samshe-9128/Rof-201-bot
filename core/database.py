@@ -9,7 +9,9 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+import re
 from core.config import BASE_DIR, DATA_DIR, DEFAULT_TZ_OFFSET, EVENT_CHANNEL_ID, WELCOME_CHANNEL_ID, RULES_CHANNEL_ID, MONGO_URI, MONGO_DB_NAME
+from core.logger import log
 
 DB_PATH = os.path.join(DATA_DIR, "haven_bot.db")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
@@ -21,14 +23,10 @@ RULES_FILE = os.path.join(BASE_DIR, "rules.json")
 APPROVED_FILE = os.path.join(BASE_DIR, "approved.json")
 WORDLE_STATS_FILE = os.path.join(BASE_DIR, "wordle_stats.json")
 
-DEFAULT_RULES_LIST = [
-    "Respect all alliance members and keep chat welcoming.",
-    "Participate actively in scheduled Alliance Brawls, Surge, and SVS events.",
-    "No spamming, toxicity, or unnecessary drama in alliance channels.",
-    "Follow event instructions from alliance leadership and have fun as a team!",
-]
+from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES, DEFAULT_RULES_LIST
 
-from core.knowledge_defaults import DEFAULT_KNOWLEDGE_ENTRIES
+_SAFE_KV_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MAX_BACKUPS_TO_KEEP = 10
 
 class _PooledConn:
     """Thin proxy around a persistent SQLite connection so existing conn.close() calls keep the pool warm."""
@@ -329,7 +327,7 @@ class Database:
                                         (uid, gname, g_played, g_won, g_loss, g_won * 25),
                                     )
                         except Exception as e:
-                            print(f"[DB] Notice during arcade_data.json migration: {e}")
+                            log.warning("Notice during arcade_data.json migration: %s", e)
 
                     if os.path.exists(WORDLE_STATS_FILE):
                         try:
@@ -356,7 +354,7 @@ class Database:
                                     (uid, gp, wins, losses, int(s.get("max_streak", 0)) * 20),
                                 )
                         except Exception as e:
-                            print(f"[DB] Notice during wordle_stats.json migration: {e}")
+                            log.warning("Notice during wordle_stats.json migration: %s", e)
 
                     if os.path.exists(EVENTS_FILE):
                         try:
@@ -390,7 +388,7 @@ class Database:
                                         ),
                                     )
                         except Exception as e:
-                            print(f"[DB] Notice during events.json migration: {e}")
+                            log.warning("Notice during events.json migration: %s", e)
 
                     rules_count = conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
                     if rules_count == 0:
@@ -887,12 +885,12 @@ class Database:
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
                         """,
-                        (new_name, new_desc, new_utc, new_dur, new_chan, new_rem, reminder_sent, new_rep, new_ann, event_id),
+                        (new_name, new_desc, new_utc, new_dur, new_chan, new_rem, reminder_sent, new_rep, new_ann, ev["id"]),
                     )
             finally:
                 conn.close()
         self._mirror_if_needed()
-        return self.get_event(event_id)
+        return self.get_event(ev["id"])
 
     def cancel_or_delete_event(self, event_id: str, delete_permanently: bool = False) -> dict[str, Any] | None:
         ev = self.get_event(event_id)
@@ -903,11 +901,11 @@ class Database:
             try:
                 with conn:
                     if delete_permanently:
-                        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+                        conn.execute("DELETE FROM events WHERE id = ?", (ev["id"],))
                     else:
                         conn.execute(
                             "UPDATE events SET status = 'cancelled', reminder_sent = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (event_id,),
+                            (ev["id"],),
                         )
             finally:
                 conn.close()
@@ -991,7 +989,7 @@ class Database:
             finally:
                 conn.close()
         if mutated:
-                self._mirror_if_needed()
+            self._mirror_if_needed()
         return due
 
     def set_event_announce(self, event_id: str, enabled: bool) -> dict[str, Any] | None:
@@ -1036,8 +1034,8 @@ class Database:
             try:
                 with conn:
                     conn.execute(
-                        "UPDATE events SET reminder_sent = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (event_id,),
+                        "UPDATE events SET reminder_sent = 1, updated_at = CURRENT_TIMESTAMP WHERE LOWER(id) = LOWER(?)",
+                        (event_id.strip(),),
                     )
             finally:
                 conn.close()
@@ -1087,7 +1085,7 @@ class Database:
             finally:
                 conn.close()
         if updated:
-                self._mirror_if_needed()
+            self._mirror_if_needed()
         return updated
 
     def remove_rule(self, rule_number: int) -> bool:
@@ -1201,22 +1199,49 @@ class Database:
             finally:
                 conn.close()
 
+    def _safe_kv_path(self, doc_key: str) -> str:
+        key = str(doc_key).strip()
+        if not _SAFE_KV_KEY_RE.fullmatch(key):
+            raise ValueError(f"Invalid kv store key: {doc_key!r}")
+        return os.path.join(DATA_DIR, f"{key}.json")
+
     def load_kv_json(self, doc_key: str, default: Any = None) -> Any:
-        path = os.path.join(DATA_DIR, f"{doc_key}.json")
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
+        path = self._safe_kv_path(doc_key)
+        with self._lock:
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except (json.JSONDecodeError, OSError) as e:
+                    log.warning("Failed reading KV file %s: %s", os.path.basename(path), e)
         return {} if default is None else default
 
     def save_kv_json(self, doc_key: str, data: Any) -> None:
-        path = os.path.join(DATA_DIR, f"{doc_key}.json")
-        tmp_path = f"{path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, path)
+        path = self._safe_kv_path(doc_key)
+        tmp_path = f"{path}.{os.getpid()}.tmp"
+        with self._lock:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, path)
+
+    def _prune_old_backups(self, prefix: str) -> None:
+        try:
+            files = sorted(
+                (
+                    os.path.join(BACKUP_DIR, fn)
+                    for fn in os.listdir(BACKUP_DIR)
+                    if fn.startswith(prefix) and not fn.endswith(".tmp")
+                ),
+                key=os.path.getmtime,
+                reverse=True,
+            )
+            for stale in files[MAX_BACKUPS_TO_KEEP:]:
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def create_backup(self) -> str:
         os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -1230,12 +1255,17 @@ class Database:
             finally:
                 dst_conn.close()
             self._mirror_if_needed()
+            self._prune_old_backups("haven_bot_backup_")
         return dest
 
 def _build_db():
     if MONGO_URI:
-        from core.mongo_database import MongoDatabase
-        return MongoDatabase(MONGO_URI, db_name=MONGO_DB_NAME)
+        try:
+            from core.mongo_database import MongoDatabase
+            return MongoDatabase(MONGO_URI, db_name=MONGO_DB_NAME)
+        except Exception as e:
+            log.error("Failed to initialize MongoDB backend (%s): %s", MONGO_DB_NAME, e)
+            raise
     return Database()
 
 db = _build_db()

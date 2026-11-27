@@ -87,7 +87,7 @@ class RulesModal(discord.ui.Modal):
         self.rules_input = discord.ui.TextInput(
             style=discord.TextStyle.paragraph,
             placeholder="Type your rules here, one rule per line.",
-            default=default_rules,
+            default=default_rules[:4000],
             min_length=5,
             max_length=4000,
             required=True,
@@ -229,7 +229,7 @@ class Members(commands.Cog):
                 f"• **Standard Game Time:** `{tz_label}` (with automatic **India Time `IST`** conversion)\n"
                 f"• **Event Reminders:** Announced {rem_mins} minutes before launch\n"
                 f"• **Upcoming Schedule:**\n{events_summary}"
-            ),
+            )[:1024],
             inline=False,
         )
 
@@ -438,7 +438,7 @@ class Members(commands.Cog):
             description=(
                 f"Added **Rule #{num}:** {rule_text}\n\n"
                 f"**Updated Rules:**\n{_safe_rules_text()}"
-            ),
+            )[:3900],
             color=HAVColors.SUCCESS,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -494,7 +494,7 @@ class Members(commands.Cog):
             description=(
                 f"Updated **Rule #{rule_number}**.\n\n"
                 f"**Current Rules:**\n{_safe_rules_text()}"
-            ),
+            )[:3900],
             color=HAVColors.SUCCESS,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -528,7 +528,7 @@ class Members(commands.Cog):
             description=(
                 f"Removed Rule `#{rule_number}` and re-numbered remaining rules.\n\n"
                 f"{_safe_rules_text()}"
-            ),
+            )[:3900],
             color=HAVColors.WARNING,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)

@@ -47,10 +47,11 @@ class RoomManager:
 
     def generate_room_id(self) -> str:
         raw_tag = "".join(ch for ch in get_alliance_short().upper() if ch.isalnum())[:6] or "ALLIANCE"
-        while True:
+        for _ in range(100):
             rid = f"{raw_tag}-" + "".join(random.choices(string.digits, k=4))
             if rid not in self.rooms:
                 return rid
+        return f"{raw_tag}-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
     def purge_stale_rooms(self) -> None:
         now = time.time()
@@ -94,6 +95,10 @@ class RoomManager:
                     old.finished = True
                 if hasattr(old, "_ended"):
                     old._ended = True
+                for task_attr in ("timer_task", "wait_task", "round_task", "signal_task", "_reveal_task"):
+                    t = getattr(old, task_attr, None)
+                    if t is not None and hasattr(t, "done") and not t.done():
+                        t.cancel()
                 old.stop()
                 for child in getattr(old, "children", []):
                     try:
@@ -249,11 +254,12 @@ class RoomLobbyView(discord.ui.View):
                 )
 
             self.room.players.append(interaction.user)
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
-            await interaction.followup.send(
-                f"✅ You joined **{self.room.game_title}** (Room `{self.room.room_id}`)!",
-                ephemeral=True,
-            )
+            embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(
+            f"✅ You joined **{self.room.game_title}** (Room `{self.room.room_id}`)!",
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Leave Game", style=discord.ButtonStyle.secondary, emoji="🚪", row=0)
     async def leave_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -288,10 +294,11 @@ class RoomLobbyView(discord.ui.View):
                 self.room.host = self.room.players[0]
                 host_note = f" 👑 {self.room.host.mention} is now the room host."
 
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
-            await interaction.followup.send(
-                f"🚪 You left room `{self.room.room_id}`.{host_note}", ephemeral=True
-            )
+            embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(
+            f"🚪 You left room `{self.room.room_id}`.{host_note}", ephemeral=True
+        )
 
     @discord.ui.button(label="Start Game", style=discord.ButtonStyle.success, emoji="▶️", row=0)
     async def start_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -331,6 +338,10 @@ class RoomLobbyView(discord.ui.View):
                     f"🔒 Only the room host ({self.room.host.mention}) can close the room.",
                     ephemeral=True,
                 )
+            if self.room.status != "waiting":
+                return await interaction.response.send_message(
+                    "⚠️ This room has already started or closed.", ephemeral=True
+                )
             self.room.status = "closed"
             room_manager.close_room(self.room.room_id)
             self.stop()
@@ -341,7 +352,7 @@ class RoomLobbyView(discord.ui.View):
                 description=f"🔒 Room `{self.room.room_id}` was closed by the host.",
                 color=HAVColors.ERROR,
             )
-            await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_timeout(self):
         async with self.room.lock:

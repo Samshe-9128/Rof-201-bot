@@ -10,7 +10,7 @@ Official Discord bot for the **Haven (`HAV`)** alliance on **Server 201**, built
    pip install -r requirements.txt
    ```
 
-   (Requires **Python 3.11+** — installs `discord.py>=2.7.1`, `python-dotenv>=1.2.4`, `pymongo>=4.20.1`)
+   (Requires **Python 3.11+** — installs `discord.py>=2.7.1`, `python-dotenv>=1.2.4`, `pymongo[srv]>=4.20.2`)
 
 2. **Enable Discord Privileged Gateway Intents:**
    In the Discord Developer Portal → your Bot → **Bot** tab → turn ON:

@@ -234,7 +234,7 @@ class EventCreateOrEditModal(discord.ui.Modal):
                     local_dt = start_dt.astimezone(get_game_tz(tz_off))
                 except Exception:
                     local_dt = start_dt
-                self.event_name.default = existing_event.get("name", "")
+                self.event_name.default = str(existing_event.get("name", ""))[:60]
                 self.event_date.default = local_dt.strftime("%Y-%m-%d")
                 self.event_time.default = local_dt.strftime("%H:%M")
                 self.duration_val = int(existing_event.get("duration_minutes", 60) or 60)
@@ -364,6 +364,11 @@ class EventCreateOrEditModal(discord.ui.Modal):
             if updated is None:
                 updated = {**self.existing_event, "reminder_minutes": rem_val}
             try:
+                from cogs.dm_handler import invalidate_assistant_caches
+                invalidate_assistant_caches()
+            except Exception:
+                pass
+            try:
                 db.log_audit(interaction.user.id, "event_edit",
                              f"Edited event {updated['id']} ({updated.get('name', '?')}), reminder={rem_val}m")
             except Exception as e:
@@ -390,6 +395,11 @@ class EventCreateOrEditModal(discord.ui.Modal):
             return await interaction.followup.send(
                 "⚠️ Could not save the event to the database. Please try again.",
                 ephemeral=True)
+        try:
+            from cogs.dm_handler import invalidate_assistant_caches
+            invalidate_assistant_caches()
+        except Exception:
+            pass
         try:
             db.log_audit(interaction.user.id, "event_create",
                          f"Created event {event_id} ({created['name']}), reminder={rem_val}m")
@@ -432,9 +442,13 @@ class EventCreateOrEditModal(discord.ui.Modal):
         try:
             dual = format_dual_timestamps(event_dt, tz_off)
         except Exception:
-            dual = {"short_date": event_dt.strftime("%Y-%m-%d"),
-                    "game_time_short": event_dt.strftime("%H:%M"),
-                    "india_time_short": "?"}
+            dual = {
+                "short_date": event_dt.strftime("%Y-%m-%d"),
+                "game_time": event_dt.strftime("%H:%M"),
+                "india_time": "?",
+                "game_time_short": event_dt.strftime("%H:%M"),
+                "india_time_short": "?",
+            }
 
         confirm_embed = hav_embed(
             title="✅ EVENT CREATED",
@@ -500,7 +514,11 @@ class EventConfirmationView(discord.ui.View):
             return await interaction.response.send_message("❌ Event not found.", ephemeral=True)
         cur = int(ev.get("announce_enabled") if ev.get("announce_enabled") is not None else 1)
         new_state = (cur == 0)
-        updated = db.set_event_announce(self.event_id, new_state)
+        db.set_event_announce(self.event_id, new_state)
+        try:
+            db.log_audit(interaction.user.id, "event_announce_toggle", f"Set announce={new_state} for {self.event_id}")
+        except Exception:
+            pass
         state_lbl = "🔔 **ON**" if new_state else "🔕 **OFF (Muted)**"
         await interaction.response.send_message(
             f"Announcements for **{ev.get('name', '?')}** (`{self.event_id}`) are now {state_lbl}.",
@@ -628,6 +646,11 @@ class ConfirmDeleteView(discord.ui.View):
             return await interaction.response.send_message("❌ Event not found.",
                                                           ephemeral=True)
         try:
+            from cogs.dm_handler import invalidate_assistant_caches
+            invalidate_assistant_caches()
+        except Exception:
+            pass
+        try:
             db.log_audit(interaction.user.id, "event_delete",
                          f"Deleted event {self.event_id} ({self.event_name})")
         except Exception:
@@ -638,6 +661,8 @@ class ConfirmDeleteView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await ensure_admin(interaction):
+            return
         await interaction.response.edit_message(content="Deletion cancelled.", view=None)
 
 # ==============================================================================

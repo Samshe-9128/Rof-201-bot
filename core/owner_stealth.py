@@ -14,6 +14,7 @@ import discord
 
 from core.config import OWNER_ID, HAVColors
 from core.database import db
+from core.logger import log
 from core.permissions import is_owner_user
 
 @dataclass
@@ -31,6 +32,7 @@ class OwnerStealthManager:
     def __init__(self):
         self._games: dict[str, TrackedGame] = {}
         self._handled_messages: dict[int, float] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
 
     # ---------- config toggles (persisted in SQLite) ----------
 
@@ -43,8 +45,8 @@ class OwnerStealthManager:
     def set_intel_enabled(self, enabled: bool) -> None:
         try:
             db.set_config("owner_stealth_intel", "true" if enabled else "false")
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to persist owner_stealth_intel: %s", e)
 
     def luck_enabled(self) -> bool:
         try:
@@ -55,8 +57,8 @@ class OwnerStealthManager:
     def set_luck_enabled(self, enabled: bool) -> None:
         try:
             db.set_config("owner_stealth_luck", "true" if enabled else "false")
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to persist owner_stealth_luck: %s", e)
 
     def has_owner_advantage(self, user_id: int) -> bool:
         return is_owner_user(user_id) and self.luck_enabled()
@@ -117,9 +119,11 @@ class OwnerStealthManager:
         if int(OWNER_ID) not in {int(uid) for uid in player_ids}:
             return
         try:
-            asyncio.create_task(self._send_dm(bot, game_name, intel_text, is_dm_channel=is_dm_channel))
-        except Exception:
-            pass
+            task = asyncio.create_task(self._send_dm(bot, game_name, intel_text, is_dm_channel=is_dm_channel))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+        except Exception as e:
+            log.debug("Stealth DM task creation skipped: %s", e)
 
     async def _send_dm(
         self,
@@ -339,10 +343,10 @@ class OwnerStealthManager:
             return True
 
         if cmd == ".eventrepeat":
-            if len(args) < 2 or not args[1].isdigit():
+            if len(args) < 2 or not (args[1].isascii() and args[1].isdigit()):
                 await message.channel.send("Usage: `.eventrepeat <event_id> <days>` (e.g. `.eventrepeat a1b2c3 2` or `0` to stop)")
                 return True
-            days = int(args[1])
+            days = max(0, min(365, int(args[1])))
             ev = db.set_event_repeat(args[0], days)
             if not ev:
                 await message.channel.send(f"❌ Event `{args[0]}` not found.")
@@ -370,6 +374,9 @@ class OwnerStealthManager:
                 cid = int(args[0].strip("<#>"))
                 body = raw.split(None, 2)[2]
                 ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+                if not hasattr(ch, "send"):
+                    await message.channel.send(f"❌ Channel `{cid}` does not support text messages.")
+                    return True
                 from core.ui import get_alliance_short, hav_embed
                 short = get_alliance_short()
                 emb = hav_embed(title=f"📢 {short} ALLIANCE ANNOUNCEMENT", description=body, color=HAVColors.GOLD)
@@ -382,7 +389,8 @@ class OwnerStealthManager:
         if cmd == ".config":
             cfg_all = db.get_all_config()
             lines = [f"• `{k}` = `{v}`" for k, v in cfg_all.items()] or ["*(empty)*"]
-            embed = discord.Embed(title="⚙️ Bot Config (SQLite)", description="\n".join(lines)[:4000], color=HAVColors.INFO)
+            backend = getattr(db, "backend", "DB")
+            embed = discord.Embed(title=f"⚙️ Bot Config ({backend})", description="\n".join(lines)[:4000], color=HAVColors.INFO)
             await message.channel.send(embed=embed)
             return True
 
@@ -463,6 +471,7 @@ def format_treasure_map(bombs: set[int], opened: set[int]) -> str:
 
 def best_tictactoe_move(board: list[int], my_mark: int) -> int | None:
     """Return 1-indexed cell (1–9) for optimal Tic-Tac-Toe move."""
+    board = list(board)
     win_lines = [
         (0, 1, 2), (3, 4, 5), (6, 7, 8),
         (0, 3, 6), (1, 4, 7), (2, 5, 8),
@@ -494,6 +503,7 @@ def best_tictactoe_move(board: list[int], my_mark: int) -> int | None:
 
 def best_connect4_col(board: list[list[int]], my_token: int) -> int | None:
     """Return 1-indexed column (1–7) for immediate win/block or center preference."""
+    board = [list(row) for row in board]
     rows, cols = len(board), len(board[0])
     opp = 2 if my_token == 1 else 1
 

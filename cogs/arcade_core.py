@@ -88,6 +88,13 @@ class LeaderboardFilterView(discord.ui.View):
         except Exception as e:
             print(f"[ARCADE] leaderboard edit failed: {e}")
 
+    async def on_timeout(self):
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
+
 class ProfileView(discord.ui.View):
     """Interactive 1-click Match History button attached to /profile."""
 
@@ -129,6 +136,13 @@ class ProfileView(discord.ui.View):
             color=HAVColors.ARENA,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def on_timeout(self):
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
 
 class ArcadeCore(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -243,7 +257,7 @@ class ArcadeCore(commands.Cog):
                     f"`{int(st.get('played', 0) or 0)}G` "
                     f"(Best: `{st.get('best_score', 0)}`)"
                 )
-            embed.add_field(name="🎮 Game Breakdown", value="\n".join(lines), inline=False)
+            embed.add_field(name="🎮 Game Breakdown", value="\n".join(lines)[:1024], inline=False)
         else:
             embed.add_field(
                 name="🎮 Game Breakdown",

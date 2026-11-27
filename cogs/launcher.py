@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
 # cogs/launcher.py
+import math
 import traceback
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -609,7 +610,15 @@ class Launcher(commands.Cog):
     @app_commands.command(name="ping", description="Check bot latency, uptime, and database status")
     @app_commands.checks.cooldown(1, 3.0)
     async def ping_cmd(self, interaction: discord.Interaction):
-        latency_ms = round(self.bot.latency * 1000)
+        raw_lat = getattr(self.bot, "latency", None)
+        if raw_lat is not None and math.isfinite(raw_lat):
+            latency_ms = round(raw_lat * 1000)
+            lat_str = f"`{latency_ms} ms`"
+            embed_color = HAVColors.SUCCESS if latency_ms < 250 else HAVColors.WARNING
+        else:
+            lat_str = "`Connecting...`"
+            embed_color = HAVColors.WARNING
+
         started = getattr(self.bot, "started_at", None)
         if started is not None:
             secs = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
@@ -622,15 +631,16 @@ class Launcher(commands.Cog):
 
         backend = getattr(db, "backend", "SQLite")
         short = get_alliance_short()
+        active_rooms_count = len(room_manager.list_active_rooms())
         embed = hav_embed(
             title=f"🏓 {short} BOT STATUS",
             description=(
-                f"• **Latency:** `{latency_ms} ms`\n"
+                f"• **Latency:** {lat_str}\n"
                 f"• **Uptime:** `{uptime_str}`\n"
                 f"• **Database:** `{backend}`\n"
-                f"• **Active Rooms:** `{len(room_manager.get_all_rooms())}`"
+                f"• **Active Rooms:** `{active_rooms_count}`"
             ),
-            color=HAVColors.SUCCESS if latency_ms < 250 else HAVColors.WARNING,
+            color=embed_color,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

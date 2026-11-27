@@ -5,6 +5,7 @@ import discord
 from collections.abc import Callable
 from core.config import BRAND_FOOTER, BRAND_NAME, BRAND_SHORT, OWNER_ID, HAVColors
 from core.database import db
+from core.logger import log
 from core.permissions import ensure_session_player
 
 def get_alliance_short() -> str:
@@ -23,10 +24,12 @@ def hav_embed(
     footer_extra: str = "",
     thumbnail_url: str | None = None,
 ) -> discord.Embed:
-    embed = discord.Embed(title=title, description=description, color=color)
+    safe_title = str(title)[:256] if title is not None else ""
+    safe_desc = str(description)[:4096] if description is not None else ""
+    embed = discord.Embed(title=safe_title, description=safe_desc, color=color)
     base_footer = get_alliance_footer()
     footer = f"{base_footer} • {footer_extra}" if footer_extra else base_footer
-    embed.set_footer(text=footer)
+    embed.set_footer(text=footer[:2048])
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
     return embed
@@ -121,6 +124,13 @@ class BugReportPromptView(discord.ui.View):
     @discord.ui.button(label="Report Bug to Owner", style=discord.ButtonStyle.secondary, emoji="🐛")
     async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal(self.context_label))
+
+    async def on_timeout(self):
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
 
 async def send_private_bug_tip(
     interaction: discord.Interaction | None,
@@ -311,7 +321,8 @@ class GameStartView(discord.ui.View):
         try:
             await self.start_callback(interaction, self.selected_difficulty.lower())
         except Exception as e:
-            print(f"[UI] GameStartView start_callback error ({self.game_title}): {type(e).__name__}: {e}")
+            self._started = False
+            log.error("GameStartView start_callback error (%s): %s: %s", self.game_title, type(e).__name__, e)
             traceback.print_exc()
             await safe_reply_error(interaction, "⚠️ Could not start the game right now. Please try again.")
 
@@ -376,7 +387,8 @@ class GameResultView(discord.ui.View):
         try:
             await self.play_again_callback(interaction)
         except Exception as e:
-            print(f"[UI] GameResultView play_again error ({self.game_name}): {type(e).__name__}: {e}")
+            self._started = False
+            log.error("GameResultView play_again error (%s): %s: %s", self.game_name, type(e).__name__, e)
             traceback.print_exc()
             await safe_reply_error(interaction, "⚠️ Could not start a new game right now. Please try `/games`.")
 
@@ -402,7 +414,7 @@ class GameResultView(discord.ui.View):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
-            print(f"[UI] GameResultView stats error: {type(e).__name__}: {e}")
+            log.warning("GameResultView stats error: %s: %s", type(e).__name__, e)
             await safe_reply_error(interaction, "⚠️ Could not load your stats right now.")
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary, emoji="✖️")
@@ -420,6 +432,13 @@ class GameResultView(discord.ui.View):
     @discord.ui.button(label="Report Bug", style=discord.ButtonStyle.secondary, emoji="🐛")
     async def report_bug_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal(self.game_name))
+
+    async def on_timeout(self):
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
 
 class PaginatedEmbedView(discord.ui.View):
     """Reusable pagination control for events, leaderboards, and knowledge lists."""
@@ -455,6 +474,13 @@ class PaginatedEmbedView(discord.ui.View):
         self.index = min(len(self.pages) - 1, self.index + 1)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    async def on_timeout(self):
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
 
 def install_global_ui_error_handlers() -> None:
     """Ensure every View (Buttons/Selects) and Modal replies cleanly if an unexpected error occurs."""

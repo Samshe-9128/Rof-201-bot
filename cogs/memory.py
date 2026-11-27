@@ -40,7 +40,8 @@ class SequenceMemoryView(discord.ui.View):
         self.finished = False
         self._lock = asyncio.Lock()
         self.message: discord.Message | None = None
-        self._stealth_id = f"memory:{user.id}:{id(self)}" 
+        self._reveal_task: asyncio.Task | None = None
+        self._stealth_id = f"memory:{user.id}:{id(self)}"
 
         for idx, (emoji_char, label) in enumerate(SEQUENCE_PALETTE):
             btn = discord.ui.Button(
@@ -136,7 +137,7 @@ class SequenceMemoryView(discord.ui.View):
                         f"🧠 **Sequence:** {seq_str}",
                         is_dm_channel=(interaction.guild is None),
                     )
-                    asyncio.create_task(next_view.reveal_then_hide(interaction))
+                    next_view._reveal_task = asyncio.create_task(next_view.reveal_then_hide(interaction))
                 else:
                     await safe_edit_or_send(
                         interaction,
@@ -277,9 +278,10 @@ class Memory(commands.Cog):
             f"🧠 **Sequence:** {seq_str}",
             is_dm_channel=(interaction.guild is None),
         )
-        asyncio.create_task(view.reveal_then_hide(interaction))
+        view._reveal_task = asyncio.create_task(view.reveal_then_hide(interaction))
 
     @app_commands.command(name="memory", description="Play fast Memory Challenge (Sequence Reproduction)")
+    @app_commands.checks.cooldown(1, 3.0)
     async def memory(self, interaction: discord.Interaction):
         await self.start_sequence_memory(interaction)
 

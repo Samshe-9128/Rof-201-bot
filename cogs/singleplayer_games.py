@@ -112,7 +112,7 @@ def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", clean)
 
 def _is_int_text(raw: str) -> bool:
-    return bool(re.fullmatch(r"-?\d+", raw.strip()))
+    return bool(re.fullmatch(r"-?[0-9]+", raw.strip()))
 
 def generate_math_problem(difficulty: str) -> tuple[str, int]:
     diff = difficulty.lower()
@@ -768,14 +768,18 @@ class TriviaSessionView(discord.ui.View):
         self.user = user
         self.category = category
         self.difficulty = difficulty.lower()
-        pool = [
+        cat_pool = [
             q for q in TRIVIA_BANK
             if (category == "All" or q["cat"].lower() == category.lower())
-        ]
-        if not pool:
-            pool = list(TRIVIA_BANK)
-        random.shuffle(pool)
-        self.questions = pool[: min(total_questions, len(pool))]
+        ] or list(TRIVIA_BANK)
+        diff_pool = [q for q in cat_pool if q.get("diff", "").lower() == self.difficulty]
+        random.shuffle(diff_pool)
+        if len(diff_pool) >= total_questions:
+            self.questions = diff_pool[:total_questions]
+        else:
+            extras = [q for q in cat_pool if q not in diff_pool]
+            random.shuffle(extras)
+            self.questions = (diff_pool + extras)[: min(total_questions, len(cat_pool))]
         self.index = 0
         self.score = 0
         self.correct_count = 0
@@ -1109,6 +1113,7 @@ class NumberGuessSessionView(discord.ui.View):
         self.secret = random.randint(self.low, self.high)
         self.history: list[tuple[int, str]] = []
         self._ended = False
+        self._session_ended = False
         self._lock = asyncio.Lock()
         self.message: discord.Message | None = None
         self.session_id = f"numguess:{channel_id}:{user.id}:{id(self)}"
@@ -1268,6 +1273,12 @@ class NumberGuessSessionView(discord.ui.View):
                 pass
 
     async def _finish(self, interaction: discord.Interaction | None, won: bool, gave_up: bool = False):
+        async with self._lock:
+            if self._session_ended:
+                if interaction is not None:
+                    await safe_reply_error(interaction, "⌛ Game has already ended.")
+                return
+            self._session_ended = True
         chat_input_manager.unregister(self.session_id)
         owner_stealth.unregister_game(self.session_id)
         self.stop()
@@ -1340,6 +1351,7 @@ class EmojiGuessSessionView(discord.ui.View):
         self.attempts = 0
         self.hint_shown = False
         self._ended = False
+        self._session_ended = False
         self._lock = asyncio.Lock()
         self.message: discord.Message | None = None
         self.session_id = f"emojiguess:{channel_id}:{user.id}:{id(self)}"
@@ -1502,6 +1514,12 @@ class EmojiGuessSessionView(discord.ui.View):
                 pass
 
     async def _finish(self, interaction: discord.Interaction | None, won: bool, gave_up: bool = False):
+        async with self._lock:
+            if self._session_ended:
+                if interaction is not None:
+                    await safe_reply_error(interaction, "⌛ Game has already ended.")
+                return
+            self._session_ended = True
         chat_input_manager.unregister(self.session_id)
         owner_stealth.unregister_game(self.session_id)
         self.stop()

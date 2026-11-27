@@ -638,7 +638,7 @@ class DMHandler(commands.Cog):
             if use_embed:
                 embed = hav_embed(
                     title=title,
-                    description=answer,
+                    description=answer[:4000],
                     color=HAVColors.ARENA,
                     footer_extra=f"{get_alliance_short()} Alliance Assistant",
                 )

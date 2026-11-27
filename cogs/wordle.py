@@ -1,7 +1,5 @@
 # cogs/wordle.py
 import asyncio
-import difflib
-import json
 import os
 import random
 import time
@@ -10,15 +8,12 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
-from dotenv import load_dotenv
 
 from core.chat_input import chat_input_manager, safe_add_reaction
 from core.owner_stealth import owner_stealth
 from core.config import BASE_DIR, OWNER_ID, HAVColors
 from core.database import db
 from core.ui import BugReportModal, get_alliance_short, safe_defer, safe_edit_or_send, safe_reply_error
-
-load_dotenv()
 
 GREEN = '🟩'
 YELLOW = '🟨'
@@ -27,29 +22,11 @@ EMPTY = '⬜'
 
 ANSWERS_FILE = os.path.join(BASE_DIR, 'wordle_answers.txt')
 VALID_FILE = os.path.join(BASE_DIR, 'wordle_valid.txt')
-STATS_FILE = os.path.join(BASE_DIR, 'wordle_stats.json')
-GAMES_FILE = os.path.join(BASE_DIR, 'wordle_games.json')
-DAILY_FILE = os.path.join(BASE_DIR, 'wordle_daily.json')
 
 GUESS_COOLDOWN_SEC = 0.8
 QUIT_KEYWORDS = {"quit", "stop", "cancel", "give up", "giveup", "end"}
 
 # ---------- helpers ----------
-
-def load_json(path, default):
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return default
-    return default
-
-def save_json(path, data):
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
 
 def load_word_list(path):
     if not os.path.exists(path):
@@ -127,6 +104,13 @@ class ShareResultView(discord.ui.View):
     async def report_bug_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BugReportModal("Wordle"))
 
+    async def on_timeout(self):
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
+
 class WordleGameView(discord.ui.View):
     """Clean popular-bot Wordle controls — guesses are typed directly in chat!"""
 
@@ -144,6 +128,7 @@ class WordleGameView(discord.ui.View):
             await interaction.response.send_message("This isn't your game!", ephemeral=True)
             return
         try:
+            self.stop()
             await self.cog.give_up(interaction, self.user_id, self.mode, self.channel_id)
         except Exception as e:
             print(f"[WORDLE] give_up failed: {e}")
@@ -405,12 +390,7 @@ class Wordle(commands.Cog):
 
         return '\n'.join(lines)
 
-    def _suggest_words(self, word, n=3):
-        """Optional helper — not used to block guesses anymore, only for info hints."""
-        try:
-            return difflib.get_close_matches(word, list(self.valid_words), n=n, cutoff=0.5)
-        except Exception:
-            return []
+
 
     # ---------- game flow ----------
 
@@ -539,7 +519,7 @@ class Wordle(commands.Cog):
         # In DMs, if the player types a single invalid word, give a helpful gentle hint.
         if " " in raw:
             return False
-        if len(low) != 5 or not low.isalpha():
+        if len(low) != 5 or not (low.isascii() and low.isalpha()):
             if is_dm:
                 await safe_add_reaction(message, "❓")
                 try:
@@ -764,6 +744,7 @@ class Wordle(commands.Cog):
     # ---------- commands ----------
 
     @app_commands.command(name="wordle", description="Play Daily or unlimited Practice Wordle (type 5-letter guesses in chat!)")
+    @app_commands.checks.cooldown(1, 3.0)
     @app_commands.describe(mode="Choose Daily Wordle (default) or Unlimited Practice")
     @app_commands.choices(
         mode=[

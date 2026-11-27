@@ -14,7 +14,7 @@ from core.ui import get_alliance_short, hav_embed, send_private_bug_tip
 EMPTY_CELL = "⚫"
 P1_TOKEN = "🔴"
 P2_TOKEN = "🟡"
-COL_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣️"]
+COL_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣"]
 
 ROWS = 6
 COLS = 7
@@ -375,6 +375,7 @@ class Connect4(commands.Cog):
 
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.command(name="connect4", description="Start a 2-player Connect 4 duel")
+    @app_commands.checks.cooldown(1, 3.0)
     async def connect4(self, interaction: discord.Interaction):
         await self.open_connect4_room(interaction)
 

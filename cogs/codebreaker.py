@@ -128,7 +128,7 @@ class CodebreakerMatchView(discord.ui.View):
         if self.finished or len(self.room.players) != 1 or message.author.id != self.room.players[0].id:
             return False
         raw = (message.content or "").strip()
-        if len(raw) != 4 or not raw.isdigit():
+        if len(raw) != 4 or not (raw.isascii() and raw.isdigit()):
             return False
         if raw[0] == "0" or (not self.allow_repeats and len(set(raw)) != 4):
             await safe_add_reaction(message, "❌")
@@ -303,7 +303,7 @@ class CodebreakerMatchView(discord.ui.View):
 
     async def handle_guess(self, interaction: discord.Interaction, guess_str: str):
         # Validate 4-digit rules before acquiring lock
-        if len(guess_str) != 4 or not guess_str.isdigit():
+        if len(guess_str) != 4 or not (guess_str.isascii() and guess_str.isdigit()):
             return await interaction.response.send_message(
                 "❌ Invalid guess! Please enter **exactly 4 digits** (e.g., `4271`).",
                 ephemeral=True,
@@ -423,6 +423,9 @@ class CodebreakerMatchView(discord.ui.View):
         if self._finished_guard:
             return
         self._finished_guard = True
+        self.finished = True
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
         chat_input_manager.unregister(self.session_id)
         owner_stealth.unregister_game(self.session_id)
 
@@ -548,7 +551,7 @@ class SetCodeModal(discord.ui.Modal, title="Set the Secret Code"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             code = self.code.component.value.strip()
-            if not code.isdigit() or any(c not in "123456" for c in code):
+            if not (code.isascii() and code.isdigit()) or any(c not in "123456" for c in code):
                 return await interaction.response.send_message(
                     "❌ Invalid code! Use only numbers 1-6.", ephemeral=True
                 )
@@ -666,7 +669,7 @@ class CodebreakerGameView(discord.ui.View):
             await safe_add_reaction(message, "🏳️")
             await self.end_game(None)
             return True
-        if len(raw) != 4 or not raw.isdigit():
+        if len(raw) != 4 or not (raw.isascii() and raw.isdigit()):
             return False
         if any(c not in "123456" for c in raw):
             await safe_add_reaction(message, "❌")
@@ -722,7 +725,7 @@ class CodebreakerGameView(discord.ui.View):
         return embed
 
     async def process_guess(self, interaction, guess_str):
-        if not guess_str.isdigit() or any(c not in "123456" for c in guess_str):
+        if not (guess_str.isascii() and guess_str.isdigit()) or any(c not in "123456" for c in guess_str):
             return await interaction.response.send_message(
                 "❌ Invalid guess! Use only numbers 1-6.", ephemeral=True
             )
@@ -810,7 +813,7 @@ class Codebreaker(commands.Cog):
         existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
-                f"⚠️ You are already in an active Codebreaker room (`{existing.room_id}`).",
+                f"⚠️ You are already in an active **{existing.game_title}** room (`{existing.room_id}`). Leave or finish that room first!",
                 ephemeral=True,
             )
 
@@ -892,6 +895,7 @@ class Codebreaker(commands.Cog):
         name="codebreaker",
         description="Start a Four-Digit Codebreaker Multiplayer Room or 1v1 Duel",
     )
+    @app_commands.checks.cooldown(1, 3.0)
     @app_commands.describe(
         opponent="Optional: Challenge a specific member to a classic 1v1 duel (leave blank for Multiplayer Room)",
         attempts="Max attempts allowed in Room mode (default: 10)",

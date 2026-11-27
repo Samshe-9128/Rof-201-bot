@@ -173,7 +173,8 @@ class SingleReactionActiveView(discord.ui.View):
             res_view = GameResultView(
                 self.user, "Reaction Speed Test", self.cog.start_single_reaction
             )
-            await self.message.edit(embed=embed, view=res_view)
+            if self.message is not None:
+                await self.message.edit(embed=embed, view=res_view)
         except Exception as e:
             print(f"[QUICKDRAW] solo on_timeout edit failed: {e}")
 
@@ -193,8 +194,9 @@ class ReactionRaceActiveView(discord.ui.View):
         self.signal_task: asyncio.Task | None = None
         self.message: discord.Message | None = None
 
-    def build_embed(self) -> discord.Embed:
-        if not self.ready and not self.finished:
+    def build_embed(self, force_ready_display: bool = False) -> discord.Embed:
+        is_ready_view = self.ready or force_ready_display
+        if not is_ready_view and not self.finished:
             title = f"🛑 {get_alliance_short()} REACTION RACE — READY SOON..."
             desc = (
                 "**WAIT...**\n"
@@ -202,7 +204,7 @@ class ReactionRaceActiveView(discord.ui.View):
                 "⚠️ *Clicking before READY is a False Start and disqualifies you for this round!*"
             )
             color = HAVColors.WARNING
-        elif self.ready and not self.finished:
+        elif is_ready_view and not self.finished:
             title = f"🟢 {get_alliance_short()} REACTION RACE — CLICK NOW!"
             desc = "⚡ **READY!** Click the button as fast as possible!"
             color = HAVColors.SUCCESS
@@ -319,7 +321,7 @@ class ReactionRaceActiveView(discord.ui.View):
 
             if self.message:
                 try:
-                    await self.message.edit(embed=self.build_embed(), view=self)
+                    await self.message.edit(embed=self.build_embed(force_ready_display=True), view=self)
                 except Exception as e:
                     print(f"[QUICKDRAW] race signal edit failed: {e}")
                     return
@@ -367,6 +369,7 @@ class ReactionRaceActiveView(discord.ui.View):
         if self._finished_guard:
             return
         self._finished_guard = True
+        self.finished = True
 
         self._disable_all_children()
         self.stop()
@@ -520,6 +523,7 @@ class QuickDraw(commands.Cog):
 
     async def start_single_reaction(self, interaction: discord.Interaction):
         view = SingleReactionActiveView(self, interaction.user)
+        room_manager.register_solo_view(interaction.user.id, "reaction_solo", view)
         embed = hav_embed(
             title=f"🛑 {get_alliance_short()} REACTION SPEED TEST",
             description=(
@@ -552,7 +556,7 @@ class QuickDraw(commands.Cog):
         existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
-                f"⚠️ You are already in an active Reaction Race room (`{existing.room_id}`).",
+                f"⚠️ You are already in an active **{existing.game_title}** room (`{existing.room_id}`). Leave or finish that room first!",
                 ephemeral=True,
             )
 
@@ -606,6 +610,7 @@ class QuickDraw(commands.Cog):
         name="quickdraw",
         description="Start a multiplayer Reaction Race (2-10 players) or solo Reaction Speed Test",
     )
+    @app_commands.checks.cooldown(1, 3.0)
     @app_commands.describe(
         mode="Choose 'multiplayer' (2-10 players) or 'solo' (personal reaction test)"
     )

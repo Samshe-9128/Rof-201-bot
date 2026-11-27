@@ -205,7 +205,7 @@ class MultiRoundRaceView(discord.ui.View):
 
         # In math_battle only process numeric messages so players can still chat
         if self.mode == "math_battle":
-            if not (raw_value.isdigit() or (raw_value.startswith("-") and raw_value[1:].isdigit())):
+            if not (raw_value.isascii() and (raw_value.isdigit() or (raw_value.startswith("-") and raw_value[1:].isdigit()))):
                 return False
             norm = raw_value
         else:
@@ -401,6 +401,9 @@ class MultiRoundRaceView(discord.ui.View):
         if self._finished_guard:
             return
         self._finished_guard = True
+        self.finished = True
+        if self.round_task and not self.round_task.done():
+            self.round_task.cancel()
         chat_input_manager.unregister(self.session_id)
         owner_stealth.unregister_game(self.session_id)
 
@@ -672,6 +675,9 @@ class TriviaBattleView(discord.ui.View):
         if self._finished_guard:
             return
         self._finished_guard = True
+        self.finished = True
+        if self.round_task and not self.round_task.done():
+            self.round_task.cancel()
         owner_stealth.unregister_game(f"triviabattle:{self.room.room_id}")
 
         self._disable_all_children()
@@ -885,43 +891,69 @@ class MultiplayerRPSView(discord.ui.View):
         except Exception as e:
             print(f"[MULTI] rps close_room failed: {e}")
 
-        winner = self.p1 if self.scores[self.p1.id] > self.scores[self.p2.id] else self.p2
-        loser = self.p2 if winner.id == self.p1.id else self.p1
-
-        # fix D: DB failures must not block the final embed.
-        try:
-            db.record_game_result(
-                user_id=winner.id,
-                game_name="Multiplayer RPS",
-                result="win",
-                score=self.scores[winner.id] * 25,
-                points_earned=35,
-                attempts=self.round_num - 1,
-                mode="multi",
-                username=winner.display_name,
-            )
-        except Exception as e:
-            print(f"[MULTI] rps winner record failed: {e}")
-        try:
-            db.record_game_result(
-                user_id=loser.id,
-                game_name="Multiplayer RPS",
-                result="loss",
-                score=self.scores[loser.id] * 10,
-                points_earned=10,
-                attempts=self.round_num - 1,
-                mode="multi",
-                username=loser.display_name,
-            )
-        except Exception as e:
-            print(f"[MULTI] rps loser record failed: {e}")
-
+        s1 = self.scores[self.p1.id]
+        s2 = self.scores[self.p2.id]
+        is_draw = (s1 == s2)
         embed = self.build_embed()
-        embed.add_field(
-            name="🏆 Match Winner",
-            value=f"🎉 **{winner.mention}** won the Best of {self.best_of} series!",
-            inline=False,
-        )
+
+        if is_draw:
+            if s1 > 0 or self.round_num > 1:
+                for p in (self.p1, self.p2):
+                    try:
+                        db.record_game_result(
+                            user_id=p.id,
+                            game_name="Multiplayer RPS",
+                            result="draw",
+                            score=self.scores[p.id] * 15,
+                            points_earned=15,
+                            attempts=max(1, self.round_num - 1),
+                            mode="multi",
+                            username=p.display_name,
+                        )
+                    except Exception as e:
+                        print(f"[MULTI] rps draw record failed: {e}")
+            embed.add_field(
+                name="🤝 Match Timed Out (Draw)",
+                value=f"Match ended in a **{s1} - {s2}** draw due to inactivity.",
+                inline=False,
+            )
+        else:
+            winner = self.p1 if s1 > s2 else self.p2
+            loser = self.p2 if winner.id == self.p1.id else self.p1
+
+            # fix D: DB failures must not block the final embed.
+            try:
+                db.record_game_result(
+                    user_id=winner.id,
+                    game_name="Multiplayer RPS",
+                    result="win",
+                    score=self.scores[winner.id] * 25,
+                    points_earned=35,
+                    attempts=max(1, self.round_num - 1),
+                    mode="multi",
+                    username=winner.display_name,
+                )
+            except Exception as e:
+                print(f"[MULTI] rps winner record failed: {e}")
+            try:
+                db.record_game_result(
+                    user_id=loser.id,
+                    game_name="Multiplayer RPS",
+                    result="loss",
+                    score=self.scores[loser.id] * 10,
+                    points_earned=10,
+                    attempts=max(1, self.round_num - 1),
+                    mode="multi",
+                    username=loser.display_name,
+                )
+            except Exception as e:
+                print(f"[MULTI] rps loser record failed: {e}")
+
+            embed.add_field(
+                name="🏆 Match Winner",
+                value=f"🎉 **{winner.mention}** won the Best of {self.best_of} series!",
+                inline=False,
+            )
         # fix J: carry best_of into the rematch.
         rematch_view = MultiRematchView(self.cog, "rps_multi", best_of=self.best_of)
         if message is not None:
@@ -1007,7 +1039,7 @@ class MultiplayerGames(commands.Cog):
         existing = room_manager.get_player_active_room(interaction.user.id)
         if existing:
             return await interaction.response.send_message(
-                f"⚠️ You are already in an active **{title}** room (`{existing.room_id}`).",
+                f"⚠️ You are already in an active **{existing.game_title}** room (`{existing.room_id}`). Leave or finish that room first!",
                 ephemeral=True,
             )
 

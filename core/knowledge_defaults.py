@@ -1,5 +1,12 @@
 # core/knowledge_defaults.py
-"""Shared default Knowledge Base entries for Haven (HAV) — Server 201."""
+"""Shared default Knowledge Base entries and default Alliance Rules for Haven (HAV) — Server 201."""
+
+DEFAULT_RULES_LIST = [
+    "Respect all alliance members and keep chat welcoming.",
+    "Participate actively in scheduled Alliance Brawls, Surge, and SVS events.",
+    "No spamming, toxicity, or unnecessary drama in alliance channels.",
+    "Follow event instructions from alliance leadership and have fun as a team!",
+]
 
 DEFAULT_KNOWLEDGE_ENTRIES = [
     {
